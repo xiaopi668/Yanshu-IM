@@ -1,0 +1,8 @@
+server/pb
+*.log
+client/.kotlin
+client/build
+client/*/build
+client/.gradle
+*.iml
+.idea

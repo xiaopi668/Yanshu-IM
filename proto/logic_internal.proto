@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package im.logic;
+
+option go_package = "im/server/internal/pb;pb";
+
+// 仅供内部参考；对外用 HTTP JSON API（见 docs/api.md）

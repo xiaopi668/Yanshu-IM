@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package im.protocol;
+
+option go_package = "im/internal/pb;pb";
+
+// ============ WebSocket 二进制帧 ============
+// 每条 WebSocket 消息 = 一个 Frame（Protobuf 编码）
+
+message Frame {
+  oneof body {
+    Heartbeat heartbeat = 1;          // C<->S 心跳
+    AuthReq auth_req = 2;             // C->S 连接后鉴权
+    AuthResp auth_resp = 3;           // S->C 鉴权结果
+    MsgSend msg_send = 4;             // C->S 发消息
+    MsgAck msg_ack = 5;               // S->C 发送 ACK（带 seq）/ C->S 收到确认
+    MsgNotify msg_notify = 6;         // S->C 在线投递
+    MsgPullReq msg_pull_req = 7;      // C->S 拉补（离线/重连增量）
+    MsgPullResp msg_pull_resp = 8;    // S->C 拉补结果
+    MsgRead msg_read = 9;             // C->S 已读上报
+    CallSignal call_signal = 10;      // 音视频通话信令（一期走消息通道）
+  }
+}
+
+message Heartbeat {}
+
+// ============ 鉴权 ============
+
+message AuthReq {
+  string token = 1;                   // HTTP 登录接口返回的 JWT
+  string device_id = 2;               // 客户端设备标识
+  string platform = 3;                // android / desktop / web
+}
+
+message AuthResp {
+  bool ok = 1;
+  string reason = 2;
+  // 鉴权成功后下发服务端最新 seq 概览，客户端可决定是否拉补
+  map<string, uint64> max_seqs = 3;   // conversation_id -> 最新 seq
+}
+
+// ============ 消息 ============
+
+enum MsgType {
+  MSG_TEXT = 0;
+  MSG_IMAGE = 1;
+  MSG_FILE = 2;
+  MSG_AUDIO = 3;
+  MSG_VIDEO = 4;
+  MSG_CALL = 5;                       // 通话信令封装为会话内消息，便于历史回显
+  MSG_SYSTEM = 6;
+}
+
+// 多媒体附件
+message Attachment {
+  string url = 1;                     // MinIO 下载地址（预签名）
+  string name = 2;
+  uint64 size = 3;
+  string mime = 4;
+  uint32 width = 5;                   // 图片/视频
+  uint32 height = 6;
+  uint32 duration = 7;                // 音视频秒数
+}
+
+message MsgSend {
+  string client_msg_id = 1;           // 客户端生成，幂等去重
+  string conversation_id = 2;
+  MsgType msg_type = 3;
+  string text = 4;                    // 文本内容 / 通话信令 JSON
+  Attachment attachment = 5;
+  repeated string mention_uids = 6;   // 群 @
+}
+
+message MsgAck {
+  string client_msg_id = 1;           // 发送 ACK 时回显
+  uint64 seq = 2;                     // 服务端分配的会话内序号
+  string server_msg_id = 3;           // 服务端雪花 ID
+  // 收到确认（接收方）：确认收到某会话某 seq
+  string conversation_id = 4;
+}
+
+message MsgNotify {
+  string conversation_id = 1;
+  uint64 seq = 2;
+  string server_msg_id = 3;
+  string from_uid = 4;
+  MsgType msg_type = 5;
+  string text = 6;
+  Attachment attachment = 7;
+  int64 sent_at = 8;                  // 毫秒时间戳
+  repeated string mention_uids = 9;
+}
+
+message MsgPullReq {
+  string conversation_id = 1;         // 为空 = 拉全部会话（按 max_seqs 概览逐个补）
+  uint64 after_seq = 2;               // 拉取 > after_seq 的消息
+  uint32 limit = 3;                   // 单页上限，服务端封顶 200
+}
+
+message MsgPullResp {
+  repeated MsgNotify msgs = 1;
+  bool has_more = 2;
+  string conversation_id = 3;
+  uint64 max_seq = 4;                 // 该会话服务端最新 seq
+}
+
+message MsgRead {
+  string conversation_id = 1;
+  uint64 up_to_seq = 2;               // 已读到此 seq
+}
+
+// ============ 音视频通话信令 ============
+
+enum CallEventType {
+  CALL_INVITE = 0;
+  CALL_ACCEPT = 1;
+  CALL_REJECT = 2;
+  CALL_CANCEL = 3;                    // 主叫取消
+  CALL_HANGUP = 4;                    // 挂断
+  CALL_TIMEOUT = 5;                   // 响铃超时（服务端或被叫产生）
+  CALL_BUSY = 6;
+}
+
+message CallSignal {
+  string call_id = 1;                 // 一次通话唯一 ID（主叫生成）
+  CallEventType event = 2;
+  string room_name = 3;               // LiveKit room（accept 后主叫/被叫都知道）
+  string livekit_token = 4;           // 被叫接听时服务端签发的 LiveKit JWT
+  string text = 5;                    // 附加信息（如拒绝原因）
+}
