@@ -1,0 +1,102 @@
+# IM 全套私有化部署：MySQL + Redis + MinIO + LiveKit SFU + coturn + logic + gateway
+#
+# 用法：
+#   cd server && docker build -t im-server:latest deploy/..
+#   cd .. && docker compose -f deploy/docker-compose.yml up -d
+#
+# 服务端点：
+#   HTTP API   http://<host>:10002     (注册/登录/好友/群组/历史/上传)
+#   WebSocket  ws://<host>:10001/ws    (实时消息 + 通话信令)
+#   MinIO      http://<host>:9000      (对象存储)
+#   LiveKit    ws://<host>:7880        (音视频媒体面)
+
+services:
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-proot123"]
+      interval: 5s
+      retries: 20
+
+  redis:
+    image: redis:7
+    volumes:
+      - redis-data:/data
+
+  minio:
+    image: elestio/minio:latest
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50200:50000-50200/udp"
+
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host
+    volumes:
+      - ./turn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+
+  logic:
+    build:
+      context: ../server
+      dockerfile: deploy/Dockerfile
+    image: im-server:latest
+    environment:
+      IM_ROLE: logic
+      IM_MYSQL_HOST: mysql
+      IM_MYSQL_PASSWORD: root123
+      IM_REDIS_ADDR: redis:6379
+      IM_JWT_SECRET: ${IM_JWT_SECRET:-dev-secret-change-me}
+      IM_MINIO_ENDPOINT: minio:9000
+      IM_MINIO_ACCESS_KEY: minioadmin
+      IM_MINIO_SECRET_KEY: minioadmin
+      IM_LIVEKIT_API_KEY: devkey
+      IM_LIVEKIT_API_SECRET: devsecret-devsecret-devsecret-devsecre
+    ports:
+      - "10002:10002"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  gateway:
+    image: im-server:latest
+    environment:
+      IM_ROLE: gateway
+      IM_MYSQL_HOST: mysql
+      IM_MYSQL_PASSWORD: root123
+      IM_REDIS_ADDR: redis:6379
+      IM_JWT_SECRET: ${IM_JWT_SECRET:-dev-secret-change-me}
+    ports:
+      - "10001:10001"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+volumes:
+  mysql-data:
+  redis-data:
+  minio-data:
