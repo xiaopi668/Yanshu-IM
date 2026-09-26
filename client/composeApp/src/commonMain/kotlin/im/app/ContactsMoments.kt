@@ -26,6 +26,14 @@ import im.client.api.momentFeed
 import im.client.api.rejectContact
 import im.client.api.requestContact
 import im.client.api.searchByYid
+import im.client.api.setRemark
+import im.client.api.removeContact
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import im.client.api.unlikeMoment
 import androidx.compose.ui.text.font.FontWeight
 import im.client.api.ContactRequestResp
@@ -126,13 +134,16 @@ fun ContactsView(client: ImClient, onOpenChat: (peerUid: String) -> Unit) {
                 )
             }
             items(contacts, key = { it.uid }) { c ->
+                var menuOpen by remember { mutableStateOf(false) }
+                var editRemark by remember { mutableStateOf(false) }
+                var confirmDelete by remember { mutableStateOf(false) }
                 Row(
                     Modifier.fillMaxWidth().clickable {
                         onOpenChat(c.uid)
                     }.padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column {
+                    Column(Modifier.weight(1f)) {
                         Text(c.remark.ifEmpty { c.nickname }, fontWeight = FontWeight.SemiBold)
                         Text(
                             "雁书号: ${c.yid.ifEmpty { "-" }}",
@@ -140,6 +151,46 @@ fun ContactsView(client: ImClient, onOpenChat: (peerUid: String) -> Unit) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    Box {
+                        TextButton(onClick = { menuOpen = true }) { Text("⋯") }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("设置备注") },
+                                onClick = { menuOpen = false; editRemark = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("删除好友") },
+                                onClick = { menuOpen = false; confirmDelete = true },
+                            )
+                        }
+                    }
+                }
+                if (editRemark) {
+                    var remark by remember { mutableStateOf(c.remark) }
+                    AlertDialog(
+                        onDismissRequest = { editRemark = false },
+                        title = { Text("设置备注") },
+                        text = { OutlinedTextField(remark, { remark = it }, singleLine = true) },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                scope.launch { client.api.setRemark(client.myToken, c.uid, remark); editRemark = false; reload() }
+                            }) { Text("保存") }
+                        },
+                        dismissButton = { TextButton(onClick = { editRemark = false }) { Text("取消") } },
+                    )
+                }
+                if (confirmDelete) {
+                    AlertDialog(
+                        onDismissRequest = { confirmDelete = false },
+                        title = { Text("删除好友") },
+                        text = { Text("确定删除 ${c.remark.ifEmpty { c.nickname }} 吗？") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                scope.launch { client.api.removeContact(client.myToken, c.uid); confirmDelete = false; reload() }
+                            }) { Text("删除") }
+                        },
+                        dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } },
+                    )
                 }
             }
         }
@@ -210,7 +261,24 @@ fun MomentCard(client: ImClient, moment: im.client.api.MomentResp, onChanged: ()
     var commentInput by remember { mutableStateOf("") }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
-            Text(moment.nickname, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(moment.nickname, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                if (moment.uid == client.myUid) {
+                    var del by remember { mutableStateOf(false) }
+                    TextButton(onClick = { del = true }, contentPadding = PaddingValues(0.dp)) { Text("删除", style = MaterialTheme.typography.labelSmall) }
+                    if (del) {
+                        AlertDialog(
+                            onDismissRequest = { del = false },
+                            title = { Text("删除动态") },
+                            text = { Text("确定删除这条动态吗？") },
+                            confirmButton = { TextButton(onClick = {
+                                scope.launch { client.api.deleteMoment(client.myToken, moment.id); del = false; onChanged() }
+                            }) { Text("删除") } },
+                            dismissButton = { TextButton(onClick = { del = false }) { Text("取消") } },
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.height(4.dp))
             if (moment.text.isNotBlank()) {
                 Text(moment.text, style = MaterialTheme.typography.bodyMedium)
@@ -402,3 +470,67 @@ internal fun scopeLaunchOpenSingle(client: ImClient, peerUid: String, onDone: (i
 
 
 internal fun momentTimeOf(ms: Long): String = "#$ms"
+
+// ============ 个人资料 ============
+
+@Composable
+fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
+    var nickname by remember { mutableStateOf(client.myNickname) }
+    var yid by remember { mutableStateOf("") }
+    var username by remember { mutableStateOf("") }
+    var yidChanged by remember { mutableStateOf(true) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        try {
+            val text = im.client.api.Http.execute("GET", "${client.apiBaseUrl}/v1/me", null, client.myToken).second
+            val me = im.client.api.json.parseToJsonElement(text).jsonObject
+            nickname = me["nickname"]?.jsonPrimitive?.content ?: client.myNickname
+            yid = me["yid"]?.jsonPrimitive?.content ?: "-"
+            username = me["username"]?.jsonPrimitive?.content ?: "-"
+            yidChanged = me["yid_changed"]?.jsonPrimitive?.content == "true"
+        } catch (_: Throwable) {}
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("我的资料") },
+        text = {
+            Column {
+                Text("用户名：$username", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("雁书号：$yid", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (!yidChanged) {
+                    Text("可修改一次", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(nickname, { nickname = it }, label = { Text("昵称") }, singleLine = true)
+                if (!yidChanged) {
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(yid, { yid = it }, label = { Text("新雁书号") }, singleLine = true)
+                }
+                msg?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall) }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    scope.launch {
+                        try {
+                            client.api.updateNickname(client.myToken, nickname.trim())
+                            if (!yidChanged && yid != "") {
+                                client.api.changeYid(client.myToken, yid.trim())
+                                yidChanged = true
+                            }
+                            msg = null
+                            onDismiss()
+                        } catch (e: Throwable) {
+                            msg = e.message ?: e.toString()
+                        }
+                    }
+                },
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}

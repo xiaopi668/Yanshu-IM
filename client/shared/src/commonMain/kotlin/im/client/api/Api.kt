@@ -203,3 +203,9 @@ suspend fun Api.commentMoment(token: String, id: String, text: String) {
 suspend fun Api.deleteMoment(token: String, id: String) {
     request<Map<String, Boolean>>("DELETE", "/v1/moments/$id", null, token)
 }
+
+/** 修改昵称 */
+suspend fun Api.updateNickname(token: String, nickname: String) {
+    val body = json.encodeToString(mapOf("nickname" to nickname))
+    request<Map<String, Boolean>>("PUT", "/v1/me", body, token)
+}

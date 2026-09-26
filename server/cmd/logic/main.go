@@ -69,6 +69,7 @@ func main() {
 	// 二期：雁书号
 	mux.Handle("GET /v1/users/search", a.authed(a.searchUser))
 	mux.Handle("PUT /v1/me/yid", a.authed(a.changeYid))
+	mux.Handle("PUT /v1/me", a.authed(a.updateMe))
 	// 二期：通讯录
 	mux.Handle("POST /v1/contacts/request", a.authed(a.contactRequest))
 	mux.Handle("POST /v1/contacts/{id}/accept", a.authed(a.contactAccept))
@@ -250,14 +251,16 @@ func (a *apiv1) me(w http.ResponseWriter, r *http.Request, uid string) {
 		Avatar   string
 		Yid      string
 	}
-	err := a.db.QueryRow(`SELECT uid, username, nickname, avatar_url, COALESCE(yid,'') FROM user WHERE uid=?`, uid).
-		Scan(&u.UID, &u.Username, &u.Nickname, &u.Avatar, &u.Yid)
+	var changed int
+	err := a.db.QueryRow(`SELECT uid, username, nickname, avatar_url, COALESCE(yid,''), yid_changed FROM user WHERE uid=?`, uid).
+		Scan(&u.UID, &u.Username, &u.Nickname, &u.Avatar, &u.Yid, &changed)
 	if err != nil {
 		fail(w, 404, err)
 		return
 	}
-	writeJSON(w, 200, map[string]string{
-		"uid": u.UID, "username": u.Username, "nickname": u.Nickname, "avatar": u.Avatar, "yid": u.Yid,
+	writeJSON(w, 200, map[string]any{
+		"uid": u.UID, "username": u.Username, "nickname": u.Nickname, "avatar": u.Avatar,
+		"yid": u.Yid, "yid_changed": changed == 1,
 	})
 }
 
@@ -313,4 +316,25 @@ func (a *apiv1) searchUser(w http.ResponseWriter, r *http.Request, uid string) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"uid": fu, "yid": yid, "nickname": nick})
+}
+
+// updateMe 修改个人资料（昵称等）
+func (a *apiv1) updateMe(w http.ResponseWriter, r *http.Request, uid string) {
+	var req struct {
+		Nickname string `json:"nickname"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	nick := strings.TrimSpace(req.Nickname)
+	if nick == "" {
+		fail(w, 400, errors.New("nickname required"))
+		return
+	}
+	if _, err := a.db.Exec(`UPDATE user SET nickname=? WHERE uid=?`, nick, uid); err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
 }

@@ -1,6 +1,7 @@
 package im.app
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -9,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -122,14 +124,32 @@ fun MainScreen(client: ImClient) {
     val callState by client.callController.uiState.collectAsState()
     var showNewGroupDialog by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf("chat") }
+    var showProfile by remember { mutableStateOf(false) }
+    val snackbar = remember { SnackbarHostState() }
+    // 通讯录事件提示条
+    LaunchedEffect(Unit) {
+        client.connection.contactEvents.collect { ev ->
+            val text = when (ev.type) {
+                "request" -> "${ev.nickname.ifEmpty { ev.fromUid.takeLast(6) }} 请求添加你为好友"
+                "accepted" -> "${ev.nickname.ifEmpty { ev.fromUid.takeLast(6) }} 已通过你的好友申请"
+                else -> "通讯录事件"
+            }
+            snackbar.showSnackbar(text)
+        }
+    }
 
+    Box(Modifier.fillMaxSize()) {
     Row(Modifier.fillMaxSize()) {
         Column(Modifier.width(280.dp).fillMaxHeight()) {
             Row(
                 Modifier.fillMaxWidth().padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(client.myNickname.ifEmpty { client.myUid.takeLast(6) }, fontWeight = FontWeight.Bold)
+                Text(
+                    client.myNickname.ifEmpty { client.myUid.takeLast(6) },
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clickable { showProfile = true },
+                )
                 Spacer(Modifier.weight(1f))
                 Text(
                     when (state) {
@@ -180,7 +200,11 @@ fun MainScreen(client: ImClient) {
             ChatScreen(client, selected!!, Modifier.weight(1f))
         }
     }
-
+    // Snackbar 容器
+    SnackbarHost(
+        hostState = snackbar,
+        modifier = Modifier.align(Alignment.BottomCenter).zIndex(1f),
+    )
     // 通话遮罩层
     when (callState.state) {
         im.client.CallState.RingingIn -> IncomingCallOverlay(
@@ -198,6 +222,10 @@ fun MainScreen(client: ImClient) {
         else -> {}
     }
 
+    if (showProfile) {
+        ProfileDialog(client) { showProfile = false }
+    }
+
     if (showNewGroupDialog) {
         NewGroupDialog(
             client = client,
@@ -205,6 +233,7 @@ fun MainScreen(client: ImClient) {
             onDismiss = { showNewGroupDialog = false },
         )
     }
+    } // 外层 Box
 }
 
 @Composable
