@@ -455,10 +455,18 @@ fun AttachmentView(m: Msg) {
     }
 }
 
-private fun formatSize(bytes: Long): String = when {
-    bytes >= 1024 * 1024 -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
-    bytes >= 1024 -> "%.1f KB".format(bytes / 1024.0)
-    else -> "$bytes B"
+private fun formatSize(bytes: Long): String {
+    fun fmt(v: Double, unit: String): String {
+        // wasm/JS 目标没有 String.format，手动保留一位小数
+        val int = v.toInt()
+        val frac = ((v - int) * 10).toInt()
+        return if (frac == 0) "$int $unit" else "$int.$frac $unit"
+    }
+    return when {
+        bytes >= 1024 * 1024 -> fmt(bytes / 1024.0 / 1024.0, "MB")
+        bytes >= 1024 -> fmt(bytes / 1024.0, "KB")
+        else -> "$bytes B"
+    }
 }
 
 

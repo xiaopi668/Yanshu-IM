@@ -1,0 +1,9 @@
+# 轻量打包：二进制已在别处编译好（服务器内存太小，不做 Go 编译）
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates mysql-client
+COPY bin/im-logic /usr/local/bin/im-logic
+COPY bin/im-gateway /usr/local/bin/im-gateway
+COPY deploy/schema.sql /usr/local/share/im/schema.sql
+COPY deploy/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
