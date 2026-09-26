@@ -79,3 +79,7 @@ cd server && go test ./...                   # 服务端单测
 - Web 端通话媒体（livekit-client JS interop）
 - Android 系统推送（自建 ntfy/FCM 网关）
 - E2E 加密、消息搜索、本地持久化(SQLDelight)
+
+## 许可证
+
+本项目基于 [AGPL-3.0](LICENSE) 开源：修改后的服务端若对网络提供服务，须以同许可证开源。商业闭源集成需另行授权。
