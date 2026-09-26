@@ -281,7 +281,11 @@ internal fun urlEncode(s: String): String {
         if (c in '0'.code..'9'.code || c in 'a'.code..'z'.code || c in 'A'.code..'Z'.code ||
             c == '-'.code || c == '_'.code || c == '.'.code || c == '~'.code
         ) sb.append(c.toChar())
-        else sb.append('%').append(("%02X".format(c)))
+        else {
+            sb.append('%')
+            val hex = "0123456789ABCDEF"
+            sb.append(hex[(c shr 4) and 0xF]).append(hex[c and 0xF])
+        }
     }
     return sb.toString()
 }
