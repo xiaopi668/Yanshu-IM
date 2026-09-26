@@ -24,9 +24,15 @@ internal val json = Json { ignoreUnknownKeys = true }
 
 /** logic HTTP API 封装 */
 class Api(private val baseUrl: String) {
-    suspend fun register(username: String, password: String, nickname: String): LoginResp {
+    suspend fun register(
+        username: String, password: String, nickname: String,
+        yid: String = "", email: String = "", emailCode: String = "", turnstileToken: String = "",
+    ): LoginResp {
         val body = json.encodeToString(
-            mapOf("username" to username, "password" to password, "nickname" to nickname)
+            mapOf(
+                "username" to username, "password" to password, "nickname" to nickname,
+                "yid" to yid, "email" to email, "email_code" to emailCode, "turnstile_token" to turnstileToken,
+            )
         )
         return request("POST", "/v1/register", body)
     }
@@ -178,6 +184,14 @@ class Api(private val baseUrl: String) {
     suspend fun searchMessages(token: String, q: String): List<SearchHitResp> =
         request("GET", "/v1/search?q=${urlEncode(q)}", null, token)
 
+    suspend fun siteConfig(): Map<String, kotlinx.serialization.json.JsonElement> =
+        request("GET", "/v1/site-config", null, null)
+
+    suspend fun sendEmailCode(email: String): Boolean {
+        val body = json.encodeToString(mapOf("email" to email))
+        return request<Map<String, Boolean>>("POST", "/v1/email/send-code", body, null)["ok"] ?: false
+    }
+
     suspend fun setAvatar(token: String, key: String) {
         request<Map<String, Boolean>>("PUT", "/v1/me/avatar",
             json.encodeToString(mapOf("key" to key)), token)
@@ -288,4 +302,12 @@ internal fun urlEncode(s: String): String {
         }
     }
     return sb.toString()
+}
+
+
+/** 无 token 的裸 HTTP 文本请求（登录前场景：site-config / 邮箱验证码 / OIDC） */
+suspend fun rawHttpText(method: String, url: String, body: String? = null): String {
+    val (code, text) = Http.execute(method, url, body, null)
+    if (code >= 400) throw ApiException("HTTP $code: $text")
+    return text
 }

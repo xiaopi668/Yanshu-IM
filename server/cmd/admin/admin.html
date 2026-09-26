@@ -38,6 +38,7 @@
     <button data-p="users">用户</button>
     <button data-p="convs">会话</button>
     <button data-p="archives">归档</button>
+    <button data-p="auth">认证</button>
   </nav>
   <div class="token"><input id="token" type="password" placeholder="管理 Token"><button class="act" onclick="boot()">连接</button></div>
 </header>
@@ -52,6 +53,24 @@
   </section>
   <section id="p-convs">
     <table id="convTable"><thead><tr><th>会话 ID</th><th>类型</th><th>成员数</th><th>消息数</th><th>创建时间</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section id="p-auth">
+    <div style="background:#fff;border-radius:12px;padding:20px 24px;box-shadow:0 1px 3px rgba(0,0,0,.06)">
+      <label><input type="checkbox" id="cfgReg"> 允许注册</label><br><br>
+      <label><input type="checkbox" id="cfgTs"> 启用 Cloudflare Turnstile 人机验证</label><br><br>
+      <input id="cfgTsSite" placeholder="Turnstile Site Key" style="width:400px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px"><br><br>
+      <input id="cfgTsSecret" placeholder="Turnstile Secret Key" type="password" style="width:400px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px"><br><br>
+      <label><input type="checkbox" id="cfgEmailCode"> 注册需邮箱验证码</label><br><br>
+      <input id="cfgSmtpHost" placeholder="SMTP Host" style="width:280px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px">
+      <input id="cfgSmtpPort" placeholder="端口" style="width:80px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px"><br><br>
+      <input id="cfgSmtpUser" placeholder="SMTP 用户" style="width:280px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px">
+      <input id="cfgSmtpPass" placeholder="SMTP 密码" type="password" style="width:280px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px">
+      <input id="cfgSmtpFrom" placeholder="发件人" style="width:280px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px"><br><br>
+      <b>OIDC 提供商（JSON 数组）</b><br>
+      <textarea id="cfgOidc" rows="5" style="width:600px;font-family:monospace;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px"></textarea>
+      <div class="msg" id="authMsg"></div>
+      <button class="act" onclick="saveAuth()">保存认证设置</button>
+    </div>
   </section>
   <section id="p-archives">
     <div class="toolbar">
@@ -86,6 +105,7 @@ function show(p) {
   if (p === 'users') loadUsers();
   if (p === 'convs') loadConvs();
   if (p === 'archives') loadArchives();
+  if (p === 'auth') loadAuth();
 }
 document.getElementById('nav').addEventListener('click', e => { if (e.target.dataset.p) show(e.target.dataset.p); });
 
@@ -130,6 +150,40 @@ async function loadArchives() {
   const list = await api('/admin/archives');
   document.querySelector('#arTable tbody').innerHTML = list.map(a => `
     <tr><td>${a.day}</td><td>${a.conversation_id}</td><td>${a.count}</td><td style="font-family:monospace">${a.object_key}</td></tr>`).join('');
+}
+async function loadAuth() {
+  const c = await api('/admin/site-config');
+  document.getElementById('cfgReg').checked = c.registration_enabled;
+  document.getElementById('cfgTs').checked = c.turnstile_enabled;
+  document.getElementById('cfgTsSite').value = c.turnstile_site_key || '';
+  document.getElementById('cfgTsSecret').value = c.turnstile_secret_key || '';
+  document.getElementById('cfgEmailCode').checked = c.email_code_enabled;
+  document.getElementById('cfgSmtpHost').value = c.smtp_host || '';
+  document.getElementById('cfgSmtpPort').value = c.smtp_port || 587;
+  document.getElementById('cfgSmtpUser').value = c.smtp_user || '';
+  document.getElementById('cfgSmtpPass').value = c.smtp_pass || '';
+  document.getElementById('cfgSmtpFrom').value = c.smtp_from || '';
+  document.getElementById('cfgOidc').value = JSON.stringify(c.oidc_providers || [], null, 2);
+}
+async function saveAuth() {
+  const c = {
+    registration_enabled: document.getElementById('cfgReg').checked,
+    turnstile_enabled: document.getElementById('cfgTs').checked,
+    turnstile_site_key: document.getElementById('cfgTsSite').value,
+    turnstile_secret_key: document.getElementById('cfgTsSecret').value,
+    email_code_enabled: document.getElementById('cfgEmailCode').checked,
+    smtp_host: document.getElementById('cfgSmtpHost').value,
+    smtp_port: parseInt(document.getElementById('cfgSmtpPort').value || '587'),
+    smtp_user: document.getElementById('cfgSmtpUser').value,
+    smtp_pass: document.getElementById('cfgSmtpPass').value,
+    smtp_from: document.getElementById('cfgSmtpFrom').value,
+    oidc_providers: JSON.parse(document.getElementById('cfgOidc').value || '[]'),
+  };
+  try {
+    await api('/admin/site-config', { method: 'PUT', body: JSON.stringify(c) });
+    document.getElementById('authMsg').textContent = '';
+    alert('已保存');
+  } catch (e) { document.getElementById('authMsg').textContent = String(e); }
 }
 async function archive() {
   const day = document.getElementById('archiveDay').value.trim();

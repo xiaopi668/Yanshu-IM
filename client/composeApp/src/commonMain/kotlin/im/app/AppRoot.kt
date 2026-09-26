@@ -23,6 +23,9 @@ import im.client.proto.MsgType
 import im.client.store.Conversation
 import im.client.file.pickFile
 import im.client.openUrl
+import im.client.registerTurnstileCallback
+import im.client.renderTurnstileWidget
+import im.client.registerTurnstileCallback
 import im.client.wireCallbacks
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -44,15 +47,44 @@ fun AppRoot() {
 
 // ---------- 登录 ----------
 
+@kotlinx.serialization.Serializable
+data class SiteConfigResp(
+    val registration_enabled: Boolean = true,
+    val turnstile_enabled: Boolean = false,
+    val turnstile_site_key: String = "",
+    val email_code_enabled: Boolean = false,
+    val oidc_providers: List<OidcProviderInfo> = emptyList(),
+)
+
+@kotlinx.serialization.Serializable
+data class OidcProviderInfo(val name: String, val authorize_url: String)
+
 @Composable
 fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
     var apiBase by remember { mutableStateOf(DEFAULT_API) }
     var wsBase by remember { mutableStateOf(DEFAULT_WS) }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var emailCode by remember { mutableStateOf("") }
+    var mode by remember { mutableStateOf("login") } // login / register
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var siteCfg by remember { mutableStateOf<SiteConfigResp?>(null) }
+    var turnstileToken by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        try {
+            val cfg = apiSiteConfig(apiBase)
+            siteCfg = cfg
+            if (!cfg.registration_enabled) mode = "login"
+            if (cfg.turnstile_enabled && cfg.turnstile_site_key.isNotEmpty()) {
+                registerTurnstileCallback { turnstileToken = it }
+                renderTurnstileWidget(cfg.turnstile_site_key, "turnstile-box")
+            }
+        } catch (_: Throwable) {}
+    }
 
     Column(
         Modifier.fillMaxSize().padding(32.dp),
@@ -65,9 +97,41 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(wsBase, { wsBase = it }, label = { Text("WS 地址") }, modifier = Modifier.fillMaxWidth(0.6f))
         Spacer(Modifier.height(16.dp))
-        OutlinedTextField(username, { username = it }, label = { Text("用户名") }, singleLine = true, modifier = Modifier.fillMaxWidth(0.6f))
+        OutlinedTextField(username, { username = it }, label = { Text("用户名 / 雁书号") }, singleLine = true, modifier = Modifier.fillMaxWidth(0.6f))
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(password, { password = it }, label = { Text("密码") }, singleLine = true, modifier = Modifier.fillMaxWidth(0.6f))
+        // 注册模式 + 邮箱验证码开启：显示邮箱与验证码
+        if (mode == "register" && (siteCfg?.email_code_enabled == true)) {
+            Spacer(Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(0.6f), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(email, { email = it }, label = { Text("邮箱") }, singleLine = true, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(enabled = email.contains("@"), onClick = {
+                    scope.launch {
+                        try {
+                            val ok = apiSendEmailCode(apiBase, email, turnstileToken)
+                            if (ok) error = "验证码已发送（5 分钟内有效）"
+                        } catch (e: Throwable) { error = e.message ?: e.toString() }
+                    }
+                }) { Text("发送验证码") }
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(emailCode, { emailCode = it }, label = { Text("邮箱验证码") }, singleLine = true, modifier = Modifier.fillMaxWidth(0.6f))
+        }
+        // Turnstile 小组件容器（Web 端渲染）
+        if (siteCfg?.turnstile_enabled == true && siteCfg?.turnstile_site_key?.isNotEmpty() == true) {
+            Spacer(Modifier.height(12.dp))
+            Box(
+                Modifier.fillMaxWidth(0.6f).height(70.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (turnstileToken.isNotEmpty()) {
+                    Text("✓ 人机验证通过", color = Color(0xFF2E7D32), style = MaterialTheme.typography.labelSmall)
+                } else {
+                    Text("人机验证加载中（仅 Web 端支持，桌面端请暂时关闭该验证）", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
         error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -92,27 +156,73 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                     }
                 },
             ) { Text(if (busy) "登录中…" else "登录") }
-            OutlinedButton(
-                enabled = !busy,
+            if (siteCfg?.registration_enabled != false) {
+                OutlinedButton(
+                    enabled = !busy,
+                    onClick = {
+                        busy = true; error = null
+                        scope.launch {
+                            try {
+                                val client = ImClient(apiBase.trimEnd('/'), wsBase)
+                                client.wireCallbacks()
+                                client.register(username, password, username, "", email, emailCode, turnstileToken)
+                                client.login(username, password)
+                                client.startSession()
+                                onLoggedIn(client)
+                            } catch (e: Throwable) {
+                                error = e.message ?: e.toString()
+                            }
+                            busy = false
+                        }
+                    },
+                ) { Text("注册并登录") }
+            }
+        }
+        // OIDC 提供商按钮
+        siteCfg?.oidc_providers?.takeIf { it.isNotEmpty() }?.let { providers ->
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                providers.forEach { p ->
+                    OutlinedButton(onClick = { openUrl(p.authorize_url) }) { Text("使用 ${p.name} 登录") }
+                }
+            }
+            Text(
+                "OIDC 登录后从回调页复制 Token，在下方粘贴完成登录",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.Gray,
+            )
+            var oidcToken by remember { mutableStateOf("") }
+            OutlinedTextField(oidcToken, { oidcToken = it }, label = { Text("OIDC Token") }, singleLine = true, modifier = Modifier.fillMaxWidth(0.6f))
+            TextButton(
+                enabled = oidcToken.isNotBlank(),
                 onClick = {
-                    busy = true; error = null
                     scope.launch {
                         try {
+                            // token -> uid：me 接口解析
                             val client = ImClient(apiBase.trimEnd('/'), wsBase)
                             client.wireCallbacks()
-                            client.register(username, password, username)
-                            client.login(username, password)
+                            val uid = client.loginWithToken(oidcToken)
                             client.startSession()
                             onLoggedIn(client)
-                        } catch (e: Throwable) {
-                            error = e.message ?: e.toString()
-                        }
-                        busy = false
+                        } catch (e: Throwable) { error = e.message ?: e.toString() }
                     }
                 },
-            ) { Text("注册并登录") }
+            ) { Text("完成 OIDC 登录") }
         }
     }
+}
+
+/** 拉 site-config（不走 token） */
+suspend fun apiSiteConfig(apiBase: String): SiteConfigResp {
+    val text = im.client.api.rawHttpText("GET", "$apiBase/v1/site-config")
+    return kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        .decodeFromString(SiteConfigResp.serializer(), text)
+}
+
+suspend fun apiSendEmailCode(apiBase: String, email: String, turnstileToken: String): Boolean {
+    val body = """{"email":"$email","turnstile_token":"$turnstileToken"}"""
+    val text = im.client.api.rawHttpText("POST", "$apiBase/v1/email/send-code", body)
+    return text.contains("ok")
 }
 
 // ---------- 主界面 ----------

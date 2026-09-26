@@ -17,6 +17,7 @@ import (
 
 	"im/internal/archive"
 	"im/internal/auth"
+	"im/internal/siteconf"
 	"im/internal/config"
 	"im/internal/hub"
 	"im/internal/messaging"
@@ -66,6 +67,8 @@ func main() {
 	a.admined(mux, "POST /admin/archive/{day}", a.archiveDayHandler)
 	a.admined(mux, "GET /admin/archives", a.archives)
 	a.admined(mux, "GET /admin/conversations", a.listConversations)
+	a.admined(mux, "GET /admin/site-config", a.getSiteConfig)
+	a.admined(mux, "PUT /admin/site-config", a.putSiteConfig)
 
 	log.Printf("[admin] listening on %s", cfg.AdminAddr)
 	log.Fatal(http.ListenAndServe(cfg.AdminAddr, cors(mux)))
@@ -266,4 +269,29 @@ func (a *admin) listConversations(w http.ResponseWriter, r *http.Request) {
 		out = append(out, c)
 	}
 	writeJSON(w, 200, out)
+}
+
+
+// ---------- 站点配置 ----------
+
+func (a *admin) getSiteConfig(w http.ResponseWriter, r *http.Request) {
+	c, err := siteconf.Load(a.db.DB)
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, c)
+}
+
+func (a *admin) putSiteConfig(w http.ResponseWriter, r *http.Request) {
+	var c siteconf.Conf
+	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	if err := siteconf.Save(a.db.DB, c); err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
 }

@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS `user` (
   `avatar_url`    VARCHAR(512) NOT NULL DEFAULT '',
   `yid`           VARCHAR(32)  NULL,     -- 雁书号（对外唯一 ID，可改一次）
   `yid_changed`   TINYINT      NOT NULL DEFAULT 0,
+  `email`         VARCHAR(128) NULL,     -- 绑定邮箱
   `created_at`    BIGINT       NOT NULL,
   PRIMARY KEY (`uid`),
   UNIQUE KEY `uk_username` (`username`),
@@ -124,6 +125,23 @@ CREATE TABLE IF NOT EXISTS `user_state` (
   `uid`      VARCHAR(32) NOT NULL,
   `disabled` TINYINT     NOT NULL DEFAULT 0,
   PRIMARY KEY (`uid`)
+) ENGINE=InnoDB;
+
+-- 站点配置（登录方式开关等）
+CREATE TABLE IF NOT EXISTS `site_config` (
+  `k` VARCHAR(64) PRIMARY KEY,
+  `v` TEXT NOT NULL
+) ENGINE=InnoDB;
+
+-- OIDC 账号关联
+CREATE TABLE IF NOT EXISTS `oidc_user` (
+  `provider`  VARCHAR(32) NOT NULL,
+  `sub`       VARCHAR(64) NOT NULL,
+  `uid`       VARCHAR(32) NOT NULL,
+  `email`     VARCHAR(128) NOT NULL DEFAULT '',
+  `linked_at` BIGINT NOT NULL,
+  PRIMARY KEY (`provider`, `sub`),
+  KEY `idx_uid` (`uid`)
 ) ENGINE=InnoDB;
 
 -- 聊天记录归档任务记录（归档到 S3）

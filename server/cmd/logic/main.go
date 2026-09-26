@@ -18,7 +18,9 @@ import (
 	"im/internal/hub"
 	"im/internal/messaging"
 	"im/internal/migrate"
+	"im/internal/siteconf"
 	"im/internal/storage"
+	"github.com/redis/go-redis/v9"
 	"im/internal/store"
 )
 
@@ -28,6 +30,7 @@ type apiv1 struct {
 	msg   *messaging.Service
 	minio *storage.ObjectStore
 	hub   *hub.Hub
+	rdb   *redis.Client
 }
 
 var yidRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{4,19}$`)
@@ -48,7 +51,7 @@ func main() {
 		log.Printf("[logic] object storage unavailable (attachments disabled): %v", err)
 	}
 
-	a := &apiv1{cfg: cfg, db: db, msg: msgSvc, minio: minioSvc, hub: h}
+	a := &apiv1{cfg: cfg, db: db, msg: msgSvc, minio: minioSvc, hub: h, rdb: rdb}
 	a.startArchiver()
 
 	mux := http.NewServeMux()
@@ -67,6 +70,11 @@ func main() {
 	mux.Handle("GET /v1/download", a.authed(a.download))
 	// 二期：雁书号
 	mux.Handle("GET /v1/users/search", a.authed(a.searchUser))
+	// 四期：站点配置 / 邮箱验证码 / OIDC
+	mux.HandleFunc("GET /v1/site-config", a.publicSiteConfig)
+	mux.HandleFunc("POST /v1/email/send-code", a.sendEmailCode)
+	mux.HandleFunc("GET /v1/oidc/{name}/authorize", a.oidcAuthorize)
+	mux.HandleFunc("GET /v1/oidc/{name}/callback", a.oidcCallback)
 	mux.Handle("PUT /v1/me/yid", a.authed(a.changeYid))
 	mux.Handle("PUT /v1/me", a.authed(a.updateMe))
 	// 二期：通讯录
@@ -158,10 +166,13 @@ func genID() string {
 
 func (a *apiv1) register(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Nickname string `json:"nickname"`
-		Yid      string `json:"yid"`
+		Username       string `json:"username"`
+		Password       string `json:"password"`
+		Nickname       string `json:"nickname"`
+		Yid            string `json:"yid"`
+		Email          string `json:"email"`
+		EmailCode      string `json:"email_code"`
+		TurnstileToken string `json:"turnstile_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, 400, err)
@@ -170,6 +181,29 @@ func (a *apiv1) register(w http.ResponseWriter, r *http.Request) {
 	if len(req.Username) < 3 || len(req.Password) < 6 {
 		fail(w, 400, errors.New("username>=3, password>=6"))
 		return
+	}
+	// 认证增强：注册开关 / Turnstile / 邮箱验证码
+	acfg := a.siteConf()
+	if !acfg.RegistrationEnabled {
+		fail(w, 403, errors.New("站点已关闭注册"))
+		return
+	}
+	if acfg.TurnstileEnabled {
+		if err := a.checkTurnstile(acfg, req.TurnstileToken, clientIP(r)); err != nil {
+			fail(w, 403, err)
+			return
+		}
+	}
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if acfg.EmailCodeEnabled {
+		if email == "" {
+			fail(w, 400, errors.New("请填写邮箱并完成验证码校验"))
+			return
+		}
+		if err := siteconf.CheckEmailCode(a.rdb, email, req.EmailCode); err != nil {
+			fail(w, 400, err)
+			return
+		}
 	}
 	yid := req.Yid
 	if yid == "" {
@@ -201,8 +235,8 @@ func (a *apiv1) register(w http.ResponseWriter, r *http.Request) {
 		nick = req.Username
 	}
 	_, err = a.db.Exec(
-		`INSERT INTO user(uid, username, password_hash, nickname, yid, yid_changed, created_at) VALUES(?,?,?,?,?,?,?)`,
-		uid, req.Username, hash, nick, yid, 0, time.Now().UnixMilli())
+		`INSERT INTO user(uid, username, password_hash, nickname, yid, yid_changed, email, created_at) VALUES(?,?,?,?,?,?,?,?)`,
+		uid, req.Username, hash, nick, yid, 0, nullIfEmpty(email), time.Now().UnixMilli())
 	if err != nil {
 		if strings.Contains(err.Error(), "uk_yid") {
 			fail(w, 409, errors.New("雁书号已被占用"))
@@ -217,9 +251,10 @@ func (a *apiv1) register(w http.ResponseWriter, r *http.Request) {
 
 func (a *apiv1) login(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Platform string `json:"platform"`
+		Username       string `json:"username"`
+		Password       string `json:"password"`
+		Platform       string `json:"platform"`
+		TurnstileToken string `json:"turnstile_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, 400, err)
@@ -239,6 +274,13 @@ func (a *apiv1) login(w http.ResponseWriter, r *http.Request) {
 	if !auth.CheckPassword(hash, req.Password) {
 		fail(w, 401, errors.New("bad credentials"))
 		return
+	}
+	acfg := a.siteConf()
+	if acfg.TurnstileEnabled {
+		if err := a.checkTurnstile(acfg, req.TurnstileToken, clientIP(r)); err != nil {
+			fail(w, 403, err)
+			return
+		}
 	}
 	// 封禁检查
 	var disabled int

@@ -43,9 +43,23 @@ class ImClient(
 
     private var syncJob: Job? = null
 
-    suspend fun register(username: String, password: String, nickname: String): Pair<String, String> {
-        val resp = api.register(username, password, nickname)
+    suspend fun register(
+        username: String, password: String, nickname: String,
+        yid: String = "", email: String = "", emailCode: String = "", turnstileToken: String = "",
+    ): Pair<String, String> {
+        val resp = api.register(username, password, nickname, yid, email, emailCode, turnstileToken)
         return resp.uid to resp.token
+    }
+
+    /** OIDC 等外部流程拿到的 token 直接登录 */
+    suspend fun loginWithToken(token: String): String {
+        myToken = token
+        val me = api.me(token)
+        myUid = me.uid
+        myNickname = me.nickname
+        store.setMyUid(me.uid)
+        callController.myUid = me.uid
+        return me.uid
     }
 
     suspend fun login(username: String, password: String): Pair<String, String> {

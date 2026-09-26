@@ -36,6 +36,7 @@ kotlin {
             implementation(compose.material3)
             implementation(compose.ui)
             implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.serialization.json)
         }
         val desktopMain by getting {
             dependencies { implementation(compose.desktop.currentOs) }

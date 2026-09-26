@@ -16,6 +16,8 @@ var statements = []string{
 	`UPDATE user SET yid = username WHERE yid IS NULL`,
 	// 群公告
 	`ALTER TABLE group_info ADD COLUMN announcement MEDIUMTEXT NULL`,
+	// 用户邮箱
+	`ALTER TABLE user ADD COLUMN email VARCHAR(128) NULL`,
 }
 
 // Run 逐条执行，忽略"已存在"类错误。
