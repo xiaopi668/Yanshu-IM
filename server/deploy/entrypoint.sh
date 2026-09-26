@@ -19,6 +19,9 @@ case "${IM_ROLE}" in
   gateway)
     exec /usr/local/bin/im-gateway
     ;;
+  admin)
+    exec /usr/local/bin/im-admin
+    ;;
   *)
     exec /usr/local/bin/im-logic
     ;;

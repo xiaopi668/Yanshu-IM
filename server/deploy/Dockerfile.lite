@@ -3,6 +3,7 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates mysql-client
 COPY bin/im-logic /usr/local/bin/im-logic
 COPY bin/im-gateway /usr/local/bin/im-gateway
+COPY bin/im-admin /usr/local/bin/im-admin
 COPY deploy/schema.sql /usr/local/share/im/schema.sql
 COPY deploy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
