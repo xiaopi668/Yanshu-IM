@@ -48,6 +48,9 @@ class ImConnection(private val gatewayWsUrl: String) {
     private val _callSignals = MutableSharedFlow<CallSignalData>(extraBufferCapacity = 64)
     val callSignals: SharedFlow<CallSignalData> = _callSignals
 
+    private val _contactEvents = MutableSharedFlow<im.client.proto.ContactEventData>(extraBufferCapacity = 64)
+    val contactEvents: SharedFlow<im.client.proto.ContactEventData> = _contactEvents
+
     private var token: String? = null
     private var deviceId: String = Random.nextLong().toString(16)
     private val platform = detectPlatform()
@@ -119,6 +122,7 @@ class ImConnection(private val gatewayWsUrl: String) {
                     is FrameKind.MsgAck -> _acks.tryEmit(kind.data)
                     is FrameKind.MsgPullResp -> _pullResps.tryEmit(kind.resp)
                     is FrameKind.CallSignalFrame -> _callSignals.tryEmit(kind.data)
+                    is FrameKind.ContactEventFrame -> _contactEvents.tryEmit(kind.data)
                     else -> {}
                 }
             }

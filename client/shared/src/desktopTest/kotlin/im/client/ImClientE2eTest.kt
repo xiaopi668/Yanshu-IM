@@ -8,6 +8,18 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import im.client.api.Api
+import im.client.api.acceptContact
+import im.client.api.contactRequests
+import im.client.api.contacts
+import im.client.api.likeMoment
+import im.client.api.momentFeed
+import im.client.api.commentMoment
+import im.client.api.createMoment
+import im.client.api.requestContact
+import im.client.api.searchByYid
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -99,4 +111,88 @@ class ImClientE2eTest {
             bob.stop()
         }
     }
+}
+
+
+
+class Phase2E2eTest {
+    private val apiBase = System.getenv("IM_TEST_API") ?: "http://127.0.0.1:10002"
+    private val wsBase = System.getenv("IM_TEST_WS") ?: "ws://127.0.0.1:10001/ws"
+    private val api = Api(apiBase)
+
+    @Test
+    fun yidRegisterSearchAndContactFlow() = runBlocking {
+        // 注册自定义雁书号
+        val suffix = System.currentTimeMillis().toString(36)
+        val yid = "e2e_$suffix"
+        val rA = api.registerRaw("t2a_$suffix", "secret1", "A2", yid)
+        val uidA = rA.uid; val tokA = rA.token
+        assertTrue(yid == api.meYid(tokA), "me 应返回雁书号")
+
+        // 按雁书号搜索
+        val found = api.searchByYid(tokA, yid)
+        assertTrue(found.uid == uidA)
+
+        // 好友申请 → 接受 → 通讯录可见
+        val rB = api.registerRaw("t2b_$suffix", "secret1", "B2", "b_$suffix")
+        val uidB = rB.uid; val tokB = rB.token
+        api.requestContact(tokA, uidB, "交个朋友")
+        val reqs = api.contactRequests(tokB)
+        assertTrue(reqs.any { it.id.isNotEmpty() && it.status == "pending" && it.from_uid == uidA })
+        val reqId = reqs.first { it.from_uid == uidA }.id
+        api.acceptContact(tokB, reqId)
+
+        val contactsA = api.contacts(tokA)
+        assertTrue(contactsA.any { it.uid == uidB })
+        val contactsB = api.contactRequests(tokB)
+        assertTrue(contactsB.any { it.id == reqId && it.status == "accepted" })
+    }
+
+    @Test
+    fun momentsCreateLikeComment() = runBlocking {
+        val suffix = System.currentTimeMillis().toString(36)
+        val rA = api.registerRaw("t3a_$suffix", "secret1", "A3", "t3a_$suffix")
+        val uidA = rA.uid; val tokA = rA.token
+        val rB = api.registerRaw("t3b_$suffix", "secret1", "B3", "t3b_$suffix")
+        val tokB = rB.token
+        // A 发动态
+        val mid = api.createMoment(tokA, "hello moments $suffix", emptyList())
+        assertTrue(mid.isNotEmpty())
+        // A/B 互加好友（直加接口，仅为让 B 能看到）
+        api.requestContact(tokB, uidA, "hi")
+        val reqs = api.contactRequests(tokA)
+        reqs.filter { it.status == "pending" && it.from_uid != uidA }.forEach {
+            api.acceptContact(tokA, it.id)
+        }
+        // B 的 feed 里有 A 的动态
+        val feed = api.momentFeed(tokB, "")
+        println("DEBUG feed=${feed.map { it.id to it.uid }} contacts=${api.contacts(tokB)}")
+        assertTrue(feed.any { it.id == mid && it.text.contains("hello moments") }, "feed=$feed contacts=${api.contacts(tokB)} reqs=${api.contactRequests(tokB)}")
+        // 点赞 + 评论
+        api.likeMoment(tokB, mid)
+        api.commentMoment(tokB, mid, "赞一个")
+        val feed2 = api.momentFeed(tokA, "")
+        val m = feed2.first { it.id == mid }
+        assertTrue(m.likes == 1, "likes=${m.likes}")
+        assertTrue(m.comments.isNotEmpty(), "comments=${m.comments}")
+        // B 视角应显示已点赞
+        val feedB = api.momentFeed(tokB, "")
+        assertTrue(feedB.first { it.id == mid }.liked_by_me, "B 应显示已点赞")
+    }
+}
+
+@kotlinx.serialization.Serializable
+internal data class RegResp(val uid: String, val token: String, val yid: String)
+
+suspend internal fun Api.registerRaw(username: String, password: String, nickname: String, yid: String): RegResp {
+    val body = im.client.api.json.encodeToString(
+        mapOf("username" to username, "password" to password, "nickname" to nickname, "yid" to yid)
+    )
+    val text = rawRequest("POST", "/v1/register", body, null)
+    return im.client.api.json.decodeFromString<RegResp>(text)
+}
+
+suspend fun Api.meYid(token: String): String {
+    val text = rawRequest("GET", "/v1/me", null, token)
+    return im.client.api.json.parseToJsonElement(text).jsonObject["yid"]?.jsonPrimitive?.content ?: ""
 }

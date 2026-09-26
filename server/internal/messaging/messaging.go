@@ -265,6 +265,13 @@ func (s *Service) MarkRead(ctx context.Context, uid, convID string, upTo uint64)
 	return nil
 }
 
+// BuildContactEvent 构建通讯录事件帧（logic 通过 hub 推送）
+func (s *Service) BuildContactEvent(typ, reqID, fromUID, yid, nickname, message string) *pb.Frame {
+	return &pb.Frame{Body: &pb.Frame_ContactEvent{ContactEvent: &pb.ContactEvent{
+		Type: typ, RequestId: reqID, FromUid: fromUID, Yid: yid, Nickname: nickname, Message: message,
+	}}}
+}
+
 func (s *Service) assertMember(ctx context.Context, uid, convID string) error {
 	var n int
 	err := s.DB.QueryRowContext(ctx,

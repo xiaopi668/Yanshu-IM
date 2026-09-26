@@ -19,7 +19,18 @@ message Frame {
     MsgPullResp msg_pull_resp = 8;    // S->C 拉补结果
     MsgRead msg_read = 9;             // C->S 已读上报
     CallSignal call_signal = 10;      // 音视频通话信令（一期走消息通道）
+    ContactEvent contact_event = 11;  // S->C 通讯录事件（好友申请/通过/拒绝）
   }
+}
+
+// 通讯录事件（服务端推送）
+message ContactEvent {
+  string type = 1;          // request / accepted / rejected
+  string request_id = 2;
+  string from_uid = 3;      // 发起方 uid（request: 申请者; accepted: 接受者）
+  string yid = 4;           // 对方雁书号
+  string nickname = 5;      // 对方昵称
+  string message = 6;       // 附言
 }
 
 message Heartbeat {}

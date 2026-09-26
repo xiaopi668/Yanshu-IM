@@ -16,12 +16,17 @@ type Config struct {
 	GatewayAddr string
 	// logic HTTP 监听地址
 	LogicAddr string
-	// MinIO
-	MinioEndpoint  string
-	MinioAccessKey string
-	MinioSecretKey string
-	MinioBucket    string
-	MinioSecure    bool
+	// MinIO / S3 兼容对象存储（IM_STORAGE_*）
+	StorageEndpoint  string
+	StorageAccessKey string
+	StorageSecretKey string
+	StorageBucket    string
+	StorageSecure    bool
+	StorageRegion    string // S3 兼容实现需要（如 us-east-1）
+	StoragePathStyle bool   // MinIO/R2 用 path-style，AWS S3 用 virtual-host
+	// 管理后台
+	AdminToken string
+	AdminAddr  string
 	// LiveKit
 	LiveKitHost        string // wss://... 客户端连接地址
 	LiveKitAPIKey      string
@@ -44,13 +49,17 @@ func Load() *Config {
 		JWTSecret:      fromEnv("IM_JWT_SECRET", "dev-secret-change-me"),
 		GatewayAddr:    fromEnv("IM_GATEWAY_ADDR", ":10001"),
 		LogicAddr:      fromEnv("IM_LOGIC_ADDR", ":10002"),
-		MinioEndpoint:  fromEnv("IM_MINIO_ENDPOINT", "127.0.0.1:9000"),
-		MinioAccessKey: fromEnv("IM_MINIO_ACCESS_KEY", "minioadmin"),
-		MinioSecretKey: fromEnv("IM_MINIO_SECRET_KEY", "minioadmin"),
-		MinioBucket:    fromEnv("IM_MINIO_BUCKET", "im-attachments"),
-		MinioSecure:    fromEnv("IM_MINIO_SECURE", "false") == "true",
-		LiveKitHost:    fromEnv("IM_LIVEKIT_HOST", "ws://127.0.0.1:7880"),
-		LiveKitAPIKey:  fromEnv("IM_LIVEKIT_API_KEY", "devkey"),
-		LiveKitAPISecret: fromEnv("IM_LIVEKIT_API_SECRET", "devsecret-devsecret-devsecret-devsecre"),
+		StorageEndpoint:  fromEnv("IM_STORAGE_ENDPOINT", "127.0.0.1:9000"),
+		StorageAccessKey: fromEnv("IM_STORAGE_ACCESS_KEY", "minioadmin"),
+		StorageSecretKey: fromEnv("IM_STORAGE_SECRET_KEY", "minioadmin"),
+		StorageBucket:    fromEnv("IM_STORAGE_BUCKET", "im-attachments"),
+		StorageSecure:    fromEnv("IM_STORAGE_SECURE", "false") == "true",
+		StorageRegion:    fromEnv("IM_STORAGE_REGION", ""),
+		StoragePathStyle: fromEnv("IM_STORAGE_PATH_STYLE", "true") == "true",
+		AdminToken:       fromEnv("IM_ADMIN_TOKEN", "dev-admin-token"),
+		AdminAddr:        fromEnv("IM_ADMIN_ADDR", ":10003"),
+		LiveKitHost:        fromEnv("IM_LIVEKIT_HOST", "ws://127.0.0.1:7880"),
+		LiveKitAPIKey:      fromEnv("IM_LIVEKIT_API_KEY", "devkey"),
+		LiveKitAPISecret:   fromEnv("IM_LIVEKIT_API_SECRET", "devsecret-devsecret-devsecret-devsecre"),
 	}
 }

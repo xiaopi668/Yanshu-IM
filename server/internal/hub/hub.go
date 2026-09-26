@@ -66,3 +66,10 @@ func (h *Hub) SendToUser(uid string, f *pb.Frame) bool {
 	}
 	return sent
 }
+
+// OnlineCount 当前在线连接用户数
+func (h *Hub) OnlineCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.conns)
+}

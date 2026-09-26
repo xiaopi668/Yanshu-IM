@@ -19,7 +19,8 @@ data class ConversationResp(val id: String, val type: String, val title: String,
 @Serializable
 data class FriendResp(val uid: String, val username: String, val nickname: String, val avatar: String)
 
-private val json = Json { ignoreUnknownKeys = true }
+@kotlin.PublishedApi
+internal val json = Json { ignoreUnknownKeys = true }
 
 /** logic HTTP API 封装 */
 class Api(private val baseUrl: String) {
@@ -86,12 +87,13 @@ class Api(private val baseUrl: String) {
     /** 下载地址（经 logic 预签名重定向） */
     fun downloadUrl(token: String, key: String): String = "$baseUrl/v1/download?key=$key&token=$token"
 
-    private suspend inline fun <reified T> request(method: String, path: String, body: String?, token: String? = null): T {
+    suspend inline fun <reified T> request(method: String, path: String, body: String?, token: String? = null): T {
         val text = rawRequest(method, path, body, token)
         return json.decodeFromString(text)
     }
 
-    private suspend fun rawRequest(method: String, path: String, body: String?, token: String?): String {
+    @kotlin.PublishedApi
+    internal suspend fun rawRequest(method: String, path: String, body: String?, token: String?): String {
         val resp = Http.execute(
             method = method,
             url = "$baseUrl$path",
@@ -114,3 +116,90 @@ data class ConversationHistoryMsg(
     val text: String,
     val sentAt: Long,
 )
+
+// ============ 二期：雁书号 / 通讯录 / 朋友圈 ===========
+
+@Serializable
+data class SearchUserResp(val uid: String, val yid: String, val nickname: String)
+
+@Serializable
+data class ContactResp(val uid: String, val nickname: String, val yid: String, val remark: String)
+
+@Serializable
+data class ContactRequestResp(
+    val id: String, val from_uid: String, val message: String, val status: String,
+    val created_at: Long, val nickname: String, val yid: String,
+)
+
+@Serializable
+data class MomentCommentVO(val id: String, val uid: String, val nickname: String, val text: String, val created_at: Long)
+
+@Serializable
+data class MomentResp(
+    val id: String, val uid: String, val nickname: String, val text: String,
+    val images: List<String>? = null, val created_at: Long,
+    val likes: Int = 0, val liked_by_me: Boolean = false,
+    val comments: List<MomentCommentVO> = emptyList(),
+)
+
+/** 通讯录相关 */
+suspend fun Api.requestContact(token: String, toUid: String, message: String): String {
+    val resp = request<Map<String, String>>(
+        "POST", "/v1/contacts/request",
+        json.encodeToString(mapOf("to_uid" to toUid, "message" to message)), token,
+    )
+    return resp["status"] ?: "pending"
+}
+
+suspend fun Api.acceptContact(token: String, requestId: String = "") {
+    request<Map<String, Boolean>>("POST", "/v1/contacts/$requestId/accept", "{}", token)
+}
+
+suspend fun Api.rejectContact(token: String, requestId: String = "") {
+    request<Map<String, Boolean>>("POST", "/v1/contacts/$requestId/reject", "{}", token)
+}
+
+suspend fun Api.contacts(token: String): List<ContactResp> =
+    request("GET", "/v1/contacts", null, token)
+
+suspend fun Api.contactRequests(token: String): List<ContactRequestResp> =
+    request("GET", "/v1/contacts/requests", null, token)
+
+suspend fun Api.searchByYid(token: String, yid: String): SearchUserResp =
+    request("GET", "/v1/users/search?yid=$yid", null, token)
+
+suspend fun Api.changeYid(token: String, newId: String) {
+    request<Map<String, String>>("PUT", "/v1/me/yid", "{\"yid\":\"$newId\"}", token)
+}
+
+/** 朋友圈相关 */
+suspend fun Api.createMoment(token: String, text: String, images: List<String>): String {
+    val imgs = images.joinToString(",") { "\"$it\"" }
+    val resp = request<Map<String, String>>(
+        "POST", "/v1/moments", "{\"text\":\"$text\",\"images\":[$imgs]}", token,
+    )
+    return resp["id"] ?: ""
+}
+
+suspend fun Api.momentFeed(token: String, beforeId: String = ""): List<MomentResp> =
+    request("GET", "/v1/moments/feed" + if (beforeId.isEmpty()) "" else "?before_id=$beforeId", null, token)
+
+suspend fun Api.myMoments(token: String, beforeId: String = ""): List<MomentResp> =
+    request("GET", "/v1/moments/mine" + if (beforeId.isEmpty()) "" else "?before_id=$beforeId", null, token)
+
+suspend fun Api.likeMoment(token: String, id: String) {
+    request<Map<String, Boolean>>("POST", "/v1/moments/$id/like", "{}", token)
+}
+
+suspend fun Api.unlikeMoment(token: String, id: String) {
+    request<Map<String, Boolean>>("DELETE", "/v1/moments/$id/like", null, token)
+}
+
+suspend fun Api.commentMoment(token: String, id: String, text: String) {
+    val body = json.encodeToString(mapOf("text" to text))
+    request<Map<String, String>>("POST", "/v1/moments/$id/comment", body, token)
+}
+
+suspend fun Api.deleteMoment(token: String, id: String) {
+    request<Map<String, Boolean>>("DELETE", "/v1/moments/$id", null, token)
+}

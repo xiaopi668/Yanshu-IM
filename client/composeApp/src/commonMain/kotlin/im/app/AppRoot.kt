@@ -121,6 +121,7 @@ fun MainScreen(client: ImClient) {
     val state by client.connectionState.collectAsState()
     val callState by client.callController.uiState.collectAsState()
     var showNewGroupDialog by remember { mutableStateOf(false) }
+    var tab by remember { mutableStateOf("chat") }
 
     Row(Modifier.fillMaxSize()) {
         Column(Modifier.width(280.dp).fillMaxHeight()) {
@@ -143,18 +144,37 @@ fun MainScreen(client: ImClient) {
                 TextButton(onClick = { client.stop() }) { Text("退出") }
             }
             HorizontalDivider()
-            // 群聊入口
-            TextButton(
-                onClick = { showNewGroupDialog = true },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-            ) { Text("＋ 新建群聊") }
+            // 视图切换：聊天 / 通讯录 / 朋友圈
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+                listOf("chat" to "聊天", "contacts" to "通讯录", "moments" to "朋友圈").forEach { (id, label) ->
+                    FilterChip(
+                        selected = tab == id,
+                        onClick = {
+                            tab = id
+                            if (id != "chat") selected = null
+                        },
+                        label = { Text(label) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
             HorizontalDivider()
-            ConversationList(client, selected) { selected = it }
+            when (tab) {
+                "contacts" -> ContactsView(client, onOpenChat = { peerUid ->
+                    scopeLaunchOpenSingle(client, peerUid) { conv -> selected = conv; tab = "chat" }
+                })
+                "moments" -> MomentsView(client)
+                else -> ConversationList(client, selected) { selected = it }
+            }
         }
         VerticalDivider()
         if (selected == null) {
             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                Text("选择一个会话开始聊天", color = Color.Gray)
+                when (tab) {
+                    "contacts" -> Text("选择好友开始聊天", color = Color.Gray)
+                    "moments" -> Text("朋友圈", color = Color.Gray)
+                    else -> Text("选择一个会话开始聊天", color = Color.Gray)
+                }
             }
         } else {
             ChatScreen(client, selected!!, Modifier.weight(1f))

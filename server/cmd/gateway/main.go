@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 
 	"im/internal/auth"
@@ -101,6 +102,13 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
+	// 在线数上报（管理后台统计用）
+	go func() {
+		for {
+			reportOnline(context.Background(), rdb, int64(s.hub.OnlineCount()))
+			time.Sleep(30 * time.Second)
+		}
+	}()
 	log.Printf("[gateway] listening on %s", cfg.GatewayAddr)
 	log.Fatal(http.ListenAndServe(cfg.GatewayAddr, mux))
 }
@@ -147,6 +155,13 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			c.uid, c.platform = claims.UID, ar.Platform
+			// 封禁检查
+			var disabled int
+			if err := s.db.QueryRowContext(r.Context(),
+				`SELECT disabled FROM user_state WHERE uid=?`, c.uid).Scan(&disabled); err == nil && disabled == 1 {
+				c.Send(&pb.Frame{Body: &pb.Frame_AuthResp{AuthResp: &pb.AuthResp{Ok: false, Reason: "account disabled"}}})
+				return
+			}
 			s.hub.Add(c.uid, c.connID, c)
 			log.Printf("[gateway] conn authed uid=%s conn=%s", c.uid, c.connID)
 			authed = true
@@ -276,6 +291,11 @@ func (s *server) handleCallSignal(ctx context.Context, c *conn, sig *pb.CallSign
 // 简单连接 ID：纳秒级时间戳足够区分本进程内连接
 func randID() string {
 	return strconv.FormatInt(time.Now().UnixNano(), 10)
+}
+
+// reportOnline gateway 周期上报在线数到 Redis（供管理后台统计）
+func reportOnline(ctx context.Context, rdb *redis.Client, count int64) {
+	_ = rdb.Set(ctx, "im:online", count, 2*time.Minute).Err()
 }
 
 func protoMarshal(f *pb.Frame) ([]byte, error) {

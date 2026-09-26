@@ -67,9 +67,11 @@ services:
       IM_MYSQL_PASSWORD: root123
       IM_REDIS_ADDR: redis:6379
       IM_JWT_SECRET: ${IM_JWT_SECRET:-dev-secret-change-me}
-      IM_MINIO_ENDPOINT: minio:9000
-      IM_MINIO_ACCESS_KEY: minioadmin
-      IM_MINIO_SECRET_KEY: minioadmin
+      IM_STORAGE_ENDPOINT: minio:9000
+      IM_STORAGE_ACCESS_KEY: minioadmin
+      IM_STORAGE_SECRET_KEY: minioadmin
+      IM_STORAGE_BUCKET: im-attachments
+      IM_STORAGE_PATH_STYLE: "true"
       IM_LIVEKIT_API_KEY: devkey
       IM_LIVEKIT_API_SECRET: devsecret-devsecret-devsecret-devsecre
     ports:
@@ -79,6 +81,23 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+
+  admin:
+    image: im-server:latest
+    environment:
+      IM_MYSQL_HOST: mysql
+      IM_MYSQL_PASSWORD: root123
+      IM_REDIS_ADDR: redis:6379
+      IM_ADMIN_TOKEN: ${IM_ADMIN_TOKEN:-dev-admin-token}
+      IM_STORAGE_ENDPOINT: minio:9000
+      IM_STORAGE_ACCESS_KEY: minioadmin
+      IM_STORAGE_SECRET_KEY: minioadmin
+      IM_STORAGE_PATH_STYLE: "true"
+    ports:
+      - "10003:10003"
+    depends_on:
+      mysql:
+        condition: service_healthy
 
   gateway:
     image: im-server:latest

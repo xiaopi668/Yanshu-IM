@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>雁书 · 管理后台</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; background:#f5f5f7; color:#1d1d1f; }
+  header { background:#fff; padding:12px 24px; display:flex; gap:16px; align-items:center; border-bottom:1px solid #e5e5ea; position:sticky; top:0; }
+  header h1 { font-size:18px; margin:0; }
+  nav { display:flex; gap:4px; }
+  nav button { border:none; background:none; padding:8px 14px; border-radius:8px; cursor:pointer; font-size:14px; }
+  nav button.active { background:#5b5bd6; color:#fff; }
+  .token { margin-left:auto; display:flex; gap:8px; }
+  .token input { width:220px; padding:6px 10px; border:1px solid #d2d2d7; border-radius:8px; }
+  main { padding:24px; max-width:1100px; margin:0 auto; }
+  .cards { display:flex; gap:16px; margin-bottom:24px; flex-wrap:wrap; }
+  .card { background:#fff; border-radius:12px; padding:20px 24px; min-width:160px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  .card .num { font-size:28px; font-weight:700; }
+  .card .label { font-size:12px; color:#86868b; }
+  table { width:100%; border-collapse:collapse; background:#fff; border-radius:12px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  th, td { text-align:left; padding:10px 14px; font-size:13px; border-bottom:1px solid #f0f0f2; }
+  th { background:#fafafa; color:#6e6e73; font-weight:500; }
+  button.act { border:1px solid #d2d2d7; background:#fff; border-radius:6px; padding:4px 10px; cursor:pointer; font-size:12px; }
+  button.act.danger { color:#e0342b; border-color:#e0342b; }
+  .toolbar { display:flex; gap:8px; margin-bottom:12px; }
+  .toolbar input { flex:1; max-width:320px; padding:6px 10px; border:1px solid #d2d2d7; border-radius:8px; }
+  .msg { color:#e0342b; font-size:13px; margin-top:8px; min-height:18px; }
+  section { display:none; }
+  section.active { display:block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>雁书 · 管理后台</h1>
+  <nav id="nav">
+    <button data-p="stats" class="active">统计</button>
+    <button data-p="users">用户</button>
+    <button data-p="convs">会话</button>
+    <button data-p="archives">归档</button>
+  </nav>
+  <div class="token"><input id="token" type="password" placeholder="管理 Token"><button class="act" onclick="boot()">连接</button></div>
+</header>
+<main>
+  <section id="p-stats" class="active">
+    <div class="cards" id="statCards"></div>
+    <div class="msg" id="statMsg"></div>
+  </section>
+  <section id="p-users">
+    <div class="toolbar"><input id="userQ" placeholder="搜索 UID / 用户名 / 昵称 / 雁书号"><button class="act" onclick="loadUsers()">搜索</button></div>
+    <table id="userTable"><thead><tr><th>UID</th><th>雁书号</th><th>昵称</th><th>用户名</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section id="p-convs">
+    <table id="convTable"><thead><tr><th>会话 ID</th><th>类型</th><th>成员数</th><th>消息数</th><th>创建时间</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section id="p-archives">
+    <div class="toolbar">
+      <input id="archiveDay" placeholder="日期 20260926"><button class="act" onclick="archive()">归档该日</button>
+      <button class="act" onclick="loadArchives()">刷新列表</button>
+    </div>
+    <table id="arTable"><thead><tr><th>日期</th><th>会话</th><th>条数</th><th>对象 Key</th></tr></thead><tbody></tbody></table>
+  </section>
+</main>
+<script>
+let TOK = localStorage.getItem('adminToken') || '';
+document.getElementById('token').value = TOK;
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOK, ...(opts.headers||{}) },
+  });
+  if (r.status === 401) { document.querySelector('.msg').textContent = 'Token 无效'; throw new Error('unauth'); }
+  return r.json();
+}
+
+async function boot() {
+  TOK = document.getElementById('token').value;
+  localStorage.setItem('adminToken', TOK);
+  loadStats(); loadUsers();
+}
+function show(p) {
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.p === p));
+  document.querySelectorAll('section').forEach(s => s.classList.toggle('active', s.id === 'p-' + p));
+  if (p === 'stats') loadStats();
+  if (p === 'users') loadUsers();
+  if (p === 'convs') loadConvs();
+  if (p === 'archives') loadArchives();
+}
+document.getElementById('nav').addEventListener('click', e => { if (e.target.dataset.p) show(e.target.dataset.p); });
+
+async function loadStats() {
+  const d = await api('/admin/stats');
+  document.getElementById('statCards').innerHTML = [
+    ['在线连接', d.online ?? '-'], ['注册用户', d.users], ['消息总数', d.messages_total],
+    ['今日消息', d.messages_today], ['朋友圈动态', d.moments],
+  ].map(([l, n]) => `<div class="card"><div class="num">${n}</div><div class="label">${l}</div></div>`).join('');
+}
+
+async function loadUsers() {
+  const q = encodeURIComponent(document.getElementById('userQ').value || '');
+  const list = await api('/admin/users?q=' + q);
+  document.querySelector('#userTable tbody').innerHTML = list.map(u => `
+    <tr><td>${u.uid.slice(-8)}</td><td>${u.yid || '-'}</td><td>${esc(u.nickname)}</td><td>${esc(u.username)}</td>
+    <td>${u.disabled ? '<span style="color:#e0342b">已封禁</span>' : '正常'}</td>
+    <td>
+      <button class="act ${u.disabled ? '' : 'danger'}" onclick="toggleUser('${u.uid}', ${u.disabled})">${u.disabled ? '解封' : '封禁'}</button>
+      <button class="act" onclick="resetPwd('${u.uid}')">重置密码</button>
+    </td></tr>`).join('');
+}
+async function toggleUser(uid, disabled) {
+  await api(`/admin/users/${uid}/${disabled ? 'enable' : 'disable'}`, { method: 'POST' });
+  loadUsers();
+}
+async function resetPwd(uid) {
+  const p = prompt('新密码（>=6 位）');
+  if (!p) return;
+  await api(`/admin/users/${uid}/reset-password`, { method: 'POST', body: JSON.stringify({ password: p }) });
+  alert('已重置');
+}
+
+async function loadConvs() {
+  const list = await api('/admin/conversations');
+  document.querySelector('#convTable tbody').innerHTML = list.map(c => `
+    <tr><td>${c.id}</td><td>${c.type === 'single' ? '单聊' : '群聊'}</td><td>${c.members}</td><td>${c.msgs}</td>
+    <td>${new Date(c.created_at).toLocaleString()}</td></tr>`).join('');
+}
+
+async function loadArchives() {
+  const list = await api('/admin/archives');
+  document.querySelector('#arTable tbody').innerHTML = list.map(a => `
+    <tr><td>${a.day}</td><td>${a.conversation_id}</td><td>${a.count}</td><td style="font-family:monospace">${a.object_key}</td></tr>`).join('');
+}
+async function archive() {
+  const day = document.getElementById('archiveDay').value.trim();
+  if (!day) return alert('输入日期，如 20260926');
+  await api(`/admin/archive/${day}`, { method: 'POST' });
+  loadArchives();
+}
+function esc(s) { return (s||'').replace(/</g,'&lt;'); }
+if (TOK) boot();
+</script>
+</body>
+</html>

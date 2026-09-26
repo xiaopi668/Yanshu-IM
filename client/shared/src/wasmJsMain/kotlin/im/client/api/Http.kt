@@ -6,6 +6,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.request
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.readBytes
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 
@@ -35,5 +36,10 @@ actual object Http {
             setBody(bytes)
         }
         return resp.status.value
+    }
+
+    actual suspend fun getBinary(url: String): Pair<Int, ByteArray> {
+        val resp = client.request(url)
+        return resp.status.value to resp.readBytes()
     }
 }

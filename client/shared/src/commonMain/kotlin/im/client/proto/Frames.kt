@@ -117,6 +117,7 @@ object Frames {
         f[5]?.firstOrNull()?.bytes?.let { return FrameKind.MsgAck(decodeMsgAck(it)) }
         f[6]?.firstOrNull()?.bytes?.let { return FrameKind.MsgNotify(decodeMsg(it)) }
         f[8]?.firstOrNull()?.bytes?.let { return FrameKind.MsgPullResp(decodePullResp(it)) }
+        f[11]?.firstOrNull()?.bytes?.let { return FrameKind.ContactEventFrame(decodeContactEvent(it)) }
         f[10]?.firstOrNull()?.bytes?.let { return FrameKind.CallSignalFrame(decodeCallSignal(it)) }
         return FrameKind.Unknown
     }
@@ -201,6 +202,7 @@ sealed class FrameKind {
     data class MsgNotify(val msg: Msg) : FrameKind()
     data class MsgPullResp(val resp: PullRespData) : FrameKind()
     data class CallSignalFrame(val data: CallSignalData) : FrameKind()
+    data class ContactEventFrame(val data: ContactEventData) : FrameKind()
     object Unknown : FrameKind()
 }
 
@@ -227,3 +229,26 @@ fun decodeCallSignal(bytes: ByteArray): CallSignalData {
     )
 }
 
+
+
+// ContactEvent（Frame field 11）：通讯录事件
+data class ContactEventData(
+    val type: String = "",       // request / accepted / rejected
+    val requestId: String = "",
+    val fromUid: String = "",
+    val yid: String = "",
+    val nickname: String = "",
+    val message: String = "",
+)
+
+fun Frames.decodeContactEvent(bytes: ByteArray): ContactEventData {
+    val s = ProtoReader(bytes).readAll()
+    return ContactEventData(
+        type = s.firstString(1) ?: "",
+        requestId = s.firstString(2) ?: "",
+        fromUid = s.firstString(3) ?: "",
+        yid = s.firstString(4) ?: "",
+        nickname = s.firstString(5) ?: "",
+        message = s.firstString(6) ?: "",
+    )
+}
