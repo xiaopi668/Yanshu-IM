@@ -12,6 +12,7 @@
 
 services:
   mysql:
+    restart: unless-stopped
     image: mysql:8
     environment:
       MYSQL_ROOT_PASSWORD: root123
@@ -24,11 +25,13 @@ services:
       retries: 20
 
   redis:
+    restart: unless-stopped
     image: redis:7
     volumes:
       - redis-data:/data
 
   minio:
+    restart: unless-stopped
     image: elestio/minio:latest
     command: server /data --console-address :9001
     environment:
@@ -41,6 +44,7 @@ services:
       - minio-data:/data
 
   livekit:
+    restart: unless-stopped
     image: livekit/livekit-server:latest
     command: --config /etc/livekit.yaml
     volumes:
@@ -51,12 +55,14 @@ services:
       - "50000-50200:50000-50200/udp"
 
   coturn:
+    restart: unless-stopped
     image: coturn/coturn:latest
     network_mode: host
     volumes:
       - ./turn/turnserver.conf:/etc/coturn/turnserver.conf:ro
 
   logic:
+    restart: unless-stopped
     build:
       context: ../server
       dockerfile: deploy/Dockerfile
@@ -83,6 +89,7 @@ services:
         condition: service_started
 
   admin:
+    restart: unless-stopped
     image: im-server:latest
     environment:
       IM_MYSQL_HOST: mysql
@@ -100,6 +107,7 @@ services:
         condition: service_healthy
 
   gateway:
+    restart: unless-stopped
     image: im-server:latest
     environment:
       IM_ROLE: gateway
