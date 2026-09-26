@@ -42,11 +42,12 @@ CREATE TABLE IF NOT EXISTS `conversation_member` (
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS `group_info` (
-  `group_id`   VARCHAR(64) NOT NULL,
-  `name`       VARCHAR(64) NOT NULL,
-  `owner_uid`  VARCHAR(32) NOT NULL,
-  `avatar_url` VARCHAR(512) NOT NULL DEFAULT '',
-  `created_at` BIGINT      NOT NULL,
+  `group_id`    VARCHAR(64) NOT NULL,
+  `name`        VARCHAR(64) NOT NULL,
+  `owner_uid`   VARCHAR(32) NOT NULL,
+  `avatar_url`  VARCHAR(512) NOT NULL DEFAULT '',
+  `announcement` MEDIUMTEXT NULL,
+  `created_at`  BIGINT      NOT NULL,
   PRIMARY KEY (`group_id`)
 ) ENGINE=InnoDB;
 

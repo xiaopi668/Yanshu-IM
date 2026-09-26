@@ -3,6 +3,7 @@ package main
 // 一期 handler（好友/会话/历史/对象存储）+ 二期（通讯录/朋友圈/归档）
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"im/internal/archive"
+	"im/internal/pb"
 )
 
 // ---------- 好友（一期直加接口，二期通讯录走 /contacts） ----------
@@ -472,7 +474,7 @@ func (a *apiv1) contactReject(w http.ResponseWriter, r *http.Request, uid string
 // listContacts 通讯录（好友，按备注/昵称排序）
 func (a *apiv1) listContacts(w http.ResponseWriter, r *http.Request, uid string) {
 	rows, err := a.db.Query(`
-		SELECT f.friend_uid, u.nickname, COALESCE(u.yid,''), f.remark
+		SELECT f.friend_uid, u.nickname, COALESCE(u.yid,''), f.remark, COALESCE(u.avatar_url,'')
 		FROM friend f JOIN user u ON u.uid=f.friend_uid WHERE f.owner_uid=?`, uid)
 	if err != nil {
 		fail(w, 500, err)
@@ -484,11 +486,12 @@ func (a *apiv1) listContacts(w http.ResponseWriter, r *http.Request, uid string)
 		Nickname string `json:"nickname"`
 		Yid      string `json:"yid"`
 		Remark   string `json:"remark"`
+		Avatar   string `json:"avatar"`
 	}
 	out := []contact{}
 	for rows.Next() {
 		var c contact
-		if err := rows.Scan(&c.UID, &c.Nickname, &c.Yid, &c.Remark); err != nil {
+		if err := rows.Scan(&c.UID, &c.Nickname, &c.Yid, &c.Remark, &c.Avatar); err != nil {
 			fail(w, 500, err)
 			return
 		}
@@ -780,4 +783,237 @@ func uniq(in []string) []string {
 		}
 	}
 	return out
+}
+
+// ---------- 三期：全局消息搜索 ----------
+
+func (a *apiv1) searchMessages(w http.ResponseWriter, r *http.Request, uid string) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len(q) < 1 {
+		writeJSON(w, 200, []any{})
+		return
+	}
+	rows, err := a.db.Query(`
+		SELECT m.server_msg_id, m.conversation_id, m.seq, m.from_uid, m.text, m.sent_at
+		FROM message m
+		JOIN conversation_member cm ON cm.conversation_id=m.conversation_id AND cm.uid=?
+		WHERE m.text LIKE ? AND m.msg_type=0
+		ORDER BY m.sent_at DESC LIMIT 50`, uid, "%"+q+"%")
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	defer rows.Close()
+	type hit struct {
+		ServerMsgID string `json:"server_msg_id"`
+		ConvID      string `json:"conversation_id"`
+		Seq         uint64 `json:"seq"`
+		FromUID     string `json:"from_uid"`
+		Text        string `json:"text"`
+		SentAt      int64  `json:"sent_at"`
+	}
+	out := []hit{}
+	for rows.Next() {
+		var h hit
+		if err := rows.Scan(&h.ServerMsgID, &h.ConvID, &h.Seq, &h.FromUID, &h.Text, &h.SentAt); err != nil {
+			continue
+		}
+		out = append(out, h)
+	}
+	writeJSON(w, 200, out)
+}
+
+// ---------- 三期：群管理 ----------
+
+// groupRole 返回 uid 在群里的角色（"" = 不是成员）
+func (a *apiv1) groupRole(convID, uid string) (string, error) {
+	var role string
+	err := a.db.QueryRow(
+		`SELECT role FROM conversation_member WHERE conversation_id=? AND uid=?`, convID, uid).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", errors.New("not a member")
+	}
+	return role, err
+}
+
+// setAnnouncement 仅 owner/admin
+func (a *apiv1) setAnnouncement(w http.ResponseWriter, r *http.Request, uid string) {
+	convID := r.PathValue("id")
+	role, err := a.groupRole(convID, uid)
+	if err != nil {
+		fail(w, 403, err)
+		return
+	}
+	if role != "owner" && role != "admin" {
+		fail(w, 403, errors.New("only owner/admin"))
+		return
+	}
+	var req struct {
+		Announcement string `json:"announcement"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	if _, err := a.db.Exec(`UPDATE group_info SET announcement=? WHERE group_id=?`, req.Announcement, convID); err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// groupInfo 群信息（含公告），成员可见
+func (a *apiv1) getGroupInfo(w http.ResponseWriter, r *http.Request, uid string) {
+	convID := r.PathValue("id")
+	if _, err := a.groupRole(convID, uid); err != nil {
+		fail(w, 403, err)
+		return
+	}
+	var name, owner, announcement string
+	err := a.db.QueryRow(
+		`SELECT name, owner_uid, COALESCE(announcement,'') FROM group_info WHERE group_id=?`, convID).
+		Scan(&name, &owner, &announcement)
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, 404, errors.New("group not found"))
+		return
+	}
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"id": convID, "name": name, "owner_uid": owner, "announcement": announcement})
+}
+
+// kickMember 踢人：owner/admin 可踢，不能踢 owner
+func (a *apiv1) kickMember(w http.ResponseWriter, r *http.Request, uid string) {
+	convID := r.PathValue("id")
+	target := r.PathValue("uid")
+	role, err := a.groupRole(convID, uid)
+	if err != nil {
+		fail(w, 403, err)
+		return
+	}
+	if role != "owner" && role != "admin" {
+		fail(w, 403, errors.New("only owner/admin"))
+		return
+	}
+	targetRole, err := a.groupRole(convID, target)
+	if err != nil {
+		fail(w, 404, err)
+		return
+	}
+	if targetRole == "owner" {
+		fail(w, 403, errors.New("cannot kick owner"))
+		return
+	}
+	if _, err := a.db.Exec(`DELETE FROM conversation_member WHERE conversation_id=? AND uid=?`, convID, target); err != nil {
+		fail(w, 500, err)
+		return
+	}
+	a.sendGroupSystemMsg(convID, uid, map[string]any{"type": "member_kicked", "uid": target})
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// setGroupRole 设角色：仅 owner；可设 admin / member
+func (a *apiv1) setGroupRole(w http.ResponseWriter, r *http.Request, uid string) {
+	convID := r.PathValue("id")
+	role, err := a.groupRole(convID, uid)
+	if err != nil {
+		fail(w, 403, err)
+		return
+	}
+	if role != "owner" {
+		fail(w, 403, errors.New("only owner"))
+		return
+	}
+	var req struct {
+		UID  string `json:"uid"`
+		Role string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	if req.Role != "admin" && req.Role != "member" {
+		fail(w, 400, errors.New("role must be admin/member"))
+		return
+	}
+	if _, err := a.db.Exec(`UPDATE conversation_member SET role=? WHERE conversation_id=? AND uid=?`,
+		req.Role, convID, req.UID); err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// addMembers 增强：拉人后发系统消息（沿用原接口路径，覆盖实现）
+func (a *apiv1) addMembersEnhanced(w http.ResponseWriter, r *http.Request, uid string) {
+	convID := r.PathValue("id")
+	ok, err := a.db.IsMember(convID, uid)
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	if !ok {
+		fail(w, 403, errors.New("not a member"))
+		return
+	}
+	var req struct {
+		Members []string `json:"members"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	now := time.Now().UnixMilli()
+	for _, m := range req.Members {
+		res, err := a.db.Exec(
+			`INSERT IGNORE INTO conversation_member(conversation_id, uid, role, joined_at) VALUES(?,?,?,?)`,
+			convID, m, "member", now)
+		if err != nil {
+			fail(w, 500, err)
+			return
+		}
+		aff, _ := res.RowsAffected()
+		if aff > 0 {
+			a.sendGroupSystemMsg(convID, uid, map[string]any{"type": "member_added", "uid": m, "by": uid})
+		}
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// sendGroupSystemMsg 往群会话发一条系统消息（走标准 seq/落库/投递）
+func rContext() context.Context { return context.Background() }
+
+func (a *apiv1) sendGroupSystemMsg(convID, fromUID string, payload map[string]any) {
+	b, _ := json.Marshal(payload)
+	send := &pb.MsgSend{
+		ClientMsgId:    "sys-" + a.msg.ID.Next(),
+		ConversationId: convID,
+		MsgType:        pb.MsgType_MSG_SYSTEM,
+		Text:           string(b),
+	}
+	_, _, _ = a.msg.Send(rContext(), fromUID, send)
+}
+
+
+// ---------- 三期：头像 ----------
+
+func (a *apiv1) setAvatar(w http.ResponseWriter, r *http.Request, uid string) {
+	var req struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	if req.Key == "" {
+		fail(w, 400, errors.New("key required"))
+		return
+	}
+	if _, err := a.db.Exec(`UPDATE user SET avatar_url=? WHERE uid=?`, req.Key, uid); err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
 }

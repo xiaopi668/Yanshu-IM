@@ -14,6 +14,8 @@ var statements = []string{
 	`ALTER TABLE user ADD COLUMN yid_changed TINYINT NOT NULL DEFAULT 0`,
 	// 为旧用户回填雁书号（username 即默认号）
 	`UPDATE user SET yid = username WHERE yid IS NULL`,
+	// 群公告
+	`ALTER TABLE group_info ADD COLUMN announcement MEDIUMTEXT NULL`,
 }
 
 // Run 逐条执行，忽略"已存在"类错误。

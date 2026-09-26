@@ -184,7 +184,18 @@ fun MainScreen(client: ImClient) {
                     scopeLaunchOpenSingle(client, peerUid) { conv -> selected = conv; tab = "chat" }
                 })
                 "moments" -> MomentsView(client)
-                else -> ConversationList(client, selected) { selected = it }
+                else -> {
+                    var showSearch by remember { mutableStateOf(false) }
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                        OutlinedButton(onClick = { showSearch = true }, modifier = Modifier.weight(1f)) { Text("🔍 搜索消息") }
+                    }
+                    ConversationList(client, selected) { selected = it }
+                    if (showSearch) {
+                        MessageSearchDialog(client, onJump = { convId ->
+                            scopeLaunchOpenSingleByConv(client, convId) { conv -> selected = conv }
+                        }) { showSearch = false }
+                    }
+                }
             }
         }
         VerticalDivider()
@@ -333,12 +344,21 @@ fun ConversationList(client: ImClient, selected: Conversation?, onSelect: (Conve
                 onClick = { onSelect(conv) },
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    Text(conv.title.ifEmpty { conv.id.takeLast(8) }, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(2.dp))
-                    val unread = (conv.lastSeq - conv.readSeq).coerceAtLeast(0)
-                    if (conv.lastSeq > conv.readSeq) {
-                        Text("未读 $unread(conv)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(conv.title.ifEmpty { conv.id.takeLast(8) }, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(2.dp))
+                        val unread = (conv.lastSeq - conv.readSeq).coerceAtLeast(0)
+                        if (conv.lastSeq > conv.readSeq) {
+                            Text("未读 $unread(conv)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                    if (conv.type == "group") {
+                        var infoOpen by remember { mutableStateOf(false) }
+                        TextButton(onClick = { infoOpen = true }, contentPadding = PaddingValues(0.dp)) { Text("⋯") }
+                        if (infoOpen) {
+                            GroupInfoDialog(client, conv.id, conv.title, onLeft = { onSelect(Conversation(conv.id, conv.type, conv.title, conv.lastSeq, conv.readSeq)) }) { infoOpen = false }
+                        }
                     }
                 }
             }

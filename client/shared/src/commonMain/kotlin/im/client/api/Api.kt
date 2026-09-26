@@ -38,9 +38,6 @@ class Api(private val baseUrl: String) {
         return request("POST", "/v1/login", body)
     }
 
-    suspend fun me(token: String): UserResp =
-        request("GET", "/v1/me", null, token)
-
     suspend fun friends(token: String): List<FriendResp> =
         request("GET", "/v1/friends", null, token)
 
@@ -103,27 +100,131 @@ class Api(private val baseUrl: String) {
         if (resp.first >= 400) throw ApiException("HTTP ${resp.first}: ${resp.second}")
         return resp.second
     }
+
+    // ============ 二期：雁书号 / 通讯录 / 朋友圈 ===========
+
+    /** 通讯录相关 */
+    suspend fun requestContact(token: String, toUid: String, message: String): String {
+        val resp = request<Map<String, String>>(
+            "POST", "/v1/contacts/request",
+            json.encodeToString(mapOf("to_uid" to toUid, "message" to message)), token,
+        )
+        return resp["status"] ?: "pending"
+    }
+
+    suspend fun acceptContact(token: String, requestId: String = "") {
+        request<Map<String, Boolean>>("POST", "/v1/contacts/$requestId/accept", "{}", token)
+    }
+
+    suspend fun rejectContact(token: String, requestId: String = "") {
+        request<Map<String, Boolean>>("POST", "/v1/contacts/$requestId/reject", "{}", token)
+    }
+
+    suspend fun contacts(token: String): List<ContactResp> =
+        request("GET", "/v1/contacts", null, token)
+
+    suspend fun contactRequests(token: String): List<ContactRequestResp> =
+        request("GET", "/v1/contacts/requests", null, token)
+
+    suspend fun searchByYid(token: String, yid: String): SearchUserResp =
+        request("GET", "/v1/users/search?yid=$yid", null, token)
+
+    suspend fun changeYid(token: String, newId: String) {
+        request<Map<String, String>>("PUT", "/v1/me/yid", "{\"yid\":\"$newId\"}", token)
+    }
+
+    /** 朋友圈相关 */
+    suspend fun createMoment(token: String, text: String, images: List<String>): String {
+        val imgs = images.joinToString(",") { "\"$it\"" }
+        val resp = request<Map<String, String>>(
+            "POST", "/v1/moments", "{\"text\":\"$text\",\"images\":[$imgs]}", token,
+        )
+        return resp["id"] ?: ""
+    }
+
+    suspend fun momentFeed(token: String, beforeId: String = ""): List<MomentResp> =
+        request("GET", "/v1/moments/feed" + if (beforeId.isEmpty()) "" else "?before_id=$beforeId", null, token)
+
+    suspend fun myMoments(token: String, beforeId: String = ""): List<MomentResp> =
+        request("GET", "/v1/moments/mine" + if (beforeId.isEmpty()) "" else "?before_id=$beforeId", null, token)
+
+    suspend fun likeMoment(token: String, id: String) {
+        request<Map<String, Boolean>>("POST", "/v1/moments/$id/like", "{}", token)
+    }
+
+    suspend fun unlikeMoment(token: String, id: String) {
+        request<Map<String, Boolean>>("DELETE", "/v1/moments/$id/like", null, token)
+    }
+
+    suspend fun commentMoment(token: String, id: String, text: String) {
+        val body = json.encodeToString(mapOf("text" to text))
+        request<Map<String, String>>("POST", "/v1/moments/$id/comment", body, token)
+    }
+
+    suspend fun deleteMoment(token: String, id: String) {
+        request<Map<String, Boolean>>("DELETE", "/v1/moments/$id", null, token)
+    }
+
+    /** 修改昵称 */
+    suspend fun setRemark(token: String, targetUid: String, remark: String) {
+        request<Map<String, Boolean>>("PUT", "/v1/contacts/$targetUid/remark",
+            json.encodeToString(mapOf("remark" to remark)), token)
+    }
+
+    suspend fun removeContact(token: String, targetUid: String) {
+        request<Map<String, Boolean>>("DELETE", "/v1/contacts/$targetUid", null, token)
+    }
+
+    suspend fun searchMessages(token: String, q: String): List<SearchHitResp> =
+        request("GET", "/v1/search?q=${urlEncode(q)}", null, token)
+
+    suspend fun setAvatar(token: String, key: String) {
+        request<Map<String, Boolean>>("PUT", "/v1/me/avatar",
+            json.encodeToString(mapOf("key" to key)), token)
+    }
+
+    suspend fun groupInfo(token: String, convId: String): GroupInfoResp =
+        request("GET", "/v1/groups/$convId/info", null, token)
+
+    suspend fun conversationMembers(token: String, convId: String): List<GroupMemberResp> =
+        request("GET", "/v1/conversations/$convId/members", null, token)
+
+    suspend fun addGroupMembers(token: String, convId: String, members: List<String>) {
+        val ms = members.joinToString(",") { json.encodeToString(it) }
+        val body = json.encodeToString(mapOf("members" to members))
+        request<Map<String, Boolean>>("POST", "/v1/conversations/$convId/members", body, token)
+    }
+
+    suspend fun setAnnouncement(token: String, convId: String, announcement: String) {
+        request<Map<String, Boolean>>("PUT", "/v1/groups/$convId/announcement",
+            json.encodeToString(mapOf("announcement" to announcement)), token)
+    }
+
+    suspend fun kickMember(token: String, convId: String, uid: String) {
+        request<Map<String, Boolean>>("DELETE", "/v1/groups/$convId/members/$uid", null, token)
+    }
+
+    suspend fun setGroupRole(token: String, convId: String, uid: String, role: String) {
+        request<Map<String, Boolean>>("PUT", "/v1/groups/$convId/roles",
+            json.encodeToString(mapOf("uid" to uid, "role" to role)), token)
+    }
+
+    suspend fun updateNickname(token: String, nickname: String) {
+        val body = json.encodeToString(mapOf("nickname" to nickname))
+        request<Map<String, Boolean>>("PUT", "/v1/me", body, token)
+    }
+
+    suspend fun me(token: String): MeResp =
+        request("GET", "/v1/me", null, token)
 }
 
 class ApiException(message: String) : Exception(message)
 
 @Serializable
-data class ConversationHistoryMsg(
-    val serverMsgId: String,
-    val seq: Long,
-    val fromUid: String,
-    val msgType: Int,
-    val text: String,
-    val sentAt: Long,
-)
-
-// ============ 二期：雁书号 / 通讯录 / 朋友圈 ===========
-
-@Serializable
 data class SearchUserResp(val uid: String, val yid: String, val nickname: String)
 
 @Serializable
-data class ContactResp(val uid: String, val nickname: String, val yid: String, val remark: String)
+data class ContactResp(val uid: String, val nickname: String, val yid: String, val remark: String, val avatar: String = "")
 
 @Serializable
 data class ContactRequestResp(
@@ -142,70 +243,45 @@ data class MomentResp(
     val comments: List<MomentCommentVO> = emptyList(),
 )
 
-/** 通讯录相关 */
-suspend fun Api.requestContact(token: String, toUid: String, message: String): String {
-    val resp = request<Map<String, String>>(
-        "POST", "/v1/contacts/request",
-        json.encodeToString(mapOf("to_uid" to toUid, "message" to message)), token,
-    )
-    return resp["status"] ?: "pending"
-}
 
-suspend fun Api.acceptContact(token: String, requestId: String = "") {
-    request<Map<String, Boolean>>("POST", "/v1/contacts/$requestId/accept", "{}", token)
-}
+@Serializable
+data class MeResp(
+    val uid: String, val username: String, val nickname: String,
+    val avatar: String = "", val yid: String, val yid_changed: Boolean = true,
+)
 
-suspend fun Api.rejectContact(token: String, requestId: String = "") {
-    request<Map<String, Boolean>>("POST", "/v1/contacts/$requestId/reject", "{}", token)
-}
+@Serializable
+data class SearchHitResp(
+    val server_msg_id: String, val conversation_id: String, val seq: Long,
+    val from_uid: String, val text: String, val sent_at: Long,
+)
 
-suspend fun Api.contacts(token: String): List<ContactResp> =
-    request("GET", "/v1/contacts", null, token)
+@Serializable
+data class GroupInfoResp(val id: String, val name: String, val owner_uid: String, val announcement: String = "")
 
-suspend fun Api.contactRequests(token: String): List<ContactRequestResp> =
-    request("GET", "/v1/contacts/requests", null, token)
+@Serializable
+data class GroupMemberResp(val uid: String, val nickname: String)
 
-suspend fun Api.searchByYid(token: String, yid: String): SearchUserResp =
-    request("GET", "/v1/users/search?yid=$yid", null, token)
+@Serializable
+data class ConversationHistoryMsg(
+    val serverMsgId: String,
+    val seq: Long,
+    val fromUid: String,
+    val msgType: Int,
+    val text: String,
+    val sentAt: Long,
+)
 
-suspend fun Api.changeYid(token: String, newId: String) {
-    request<Map<String, String>>("PUT", "/v1/me/yid", "{\"yid\":\"$newId\"}", token)
-}
 
-/** 朋友圈相关 */
-suspend fun Api.createMoment(token: String, text: String, images: List<String>): String {
-    val imgs = images.joinToString(",") { "\"$it\"" }
-    val resp = request<Map<String, String>>(
-        "POST", "/v1/moments", "{\"text\":\"$text\",\"images\":[$imgs]}", token,
-    )
-    return resp["id"] ?: ""
-}
-
-suspend fun Api.momentFeed(token: String, beforeId: String = ""): List<MomentResp> =
-    request("GET", "/v1/moments/feed" + if (beforeId.isEmpty()) "" else "?before_id=$beforeId", null, token)
-
-suspend fun Api.myMoments(token: String, beforeId: String = ""): List<MomentResp> =
-    request("GET", "/v1/moments/mine" + if (beforeId.isEmpty()) "" else "?before_id=$beforeId", null, token)
-
-suspend fun Api.likeMoment(token: String, id: String) {
-    request<Map<String, Boolean>>("POST", "/v1/moments/$id/like", "{}", token)
-}
-
-suspend fun Api.unlikeMoment(token: String, id: String) {
-    request<Map<String, Boolean>>("DELETE", "/v1/moments/$id/like", null, token)
-}
-
-suspend fun Api.commentMoment(token: String, id: String, text: String) {
-    val body = json.encodeToString(mapOf("text" to text))
-    request<Map<String, String>>("POST", "/v1/moments/$id/comment", body, token)
-}
-
-suspend fun Api.deleteMoment(token: String, id: String) {
-    request<Map<String, Boolean>>("DELETE", "/v1/moments/$id", null, token)
-}
-
-/** 修改昵称 */
-suspend fun Api.updateNickname(token: String, nickname: String) {
-    val body = json.encodeToString(mapOf("nickname" to nickname))
-    request<Map<String, Boolean>>("PUT", "/v1/me", body, token)
+/** 极简 URL 编码（跨平台）：空格及非安全字符转 %XX */
+internal fun urlEncode(s: String): String {
+    val sb = StringBuilder()
+    for (b in s.encodeToByteArray()) {
+        val c = b.toInt()
+        if (c in '0'.code..'9'.code || c in 'a'.code..'z'.code || c in 'A'.code..'Z'.code ||
+            c == '-'.code || c == '_'.code || c == '.'.code || c == '~'.code
+        ) sb.append(c.toChar())
+        else sb.append('%').append(("%02X".format(c)))
+    }
+    return sb.toString()
 }

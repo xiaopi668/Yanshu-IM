@@ -6,6 +6,7 @@ val hasAndroidSdk = System.getenv("ANDROID_HOME") != null ||
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.sqldelight)
     alias(libs.plugins.android.lib) apply false
 }
 
@@ -17,6 +18,7 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
+            implementation(libs.sqldelight.runtime)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.ktor.client.core)
@@ -24,8 +26,14 @@ kotlin {
             implementation(libs.ktor.client.content)
             implementation(libs.ktor.serialization.json)
         }
-        val desktopMain by getting { dependencies { implementation(libs.ktor.engine.cio) } }
-        if (hasAndroidSdk) getByName("androidMain") { dependencies { implementation(libs.ktor.engine.okhttp) } }
+        val desktopMain by getting { dependencies {
+            implementation(libs.ktor.engine.cio)
+            implementation(libs.sqldelight.sqlite)
+        } }
+        if (hasAndroidSdk) getByName("androidMain") { dependencies {
+            implementation(libs.ktor.engine.okhttp)
+            implementation(libs.sqldelight.android)
+        } }
         val wasmJsMain by getting { dependencies {
             implementation(libs.ktor.engine.js)
             implementation(libs.kotlinx.browser)
@@ -43,6 +51,14 @@ if (hasAndroidSdk) {
     }
 }
 
+// DB 冒烟入口：gradle :shared:runDbSmoke
+tasks.register<JavaExec>("runDbSmoke") {
+    group = "im-debug"
+    val comp = kotlin.targets.getByName("desktop").compilations.getByName("test")
+    mainClass.set("im.client.DbSmokeKt")
+    classpath = (comp.runtimeDependencyFiles ?: files()) + files(comp.output.allOutputs)
+}
+
 // 连接层调试入口：gradle -p . :shared:runDebugConn
 afterEvaluate {
     tasks.register<JavaExec>("runDebugConn") {
@@ -51,5 +67,13 @@ afterEvaluate {
         mainClass.set("im.client.DebugConnTestKt")
         classpath = (comp.runtimeDependencyFiles ?: files()) + files(comp.output.allOutputs)
         standardInput = System.`in`
+    }
+}
+
+sqldelight {
+    databases {
+        create("ImDatabase") {
+            packageName.set("im.client.db")
+        }
     }
 }

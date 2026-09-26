@@ -62,7 +62,6 @@ func main() {
 	mux.Handle("POST /v1/conversations/single", a.authed(a.createSingle))
 	mux.Handle("POST /v1/conversations/group", a.authed(a.createGroup))
 	mux.Handle("GET /v1/conversations/{id}/members", a.authed(a.listMembers))
-	mux.Handle("POST /v1/conversations/{id}/members", a.authed(a.addMembers))
 	mux.Handle("GET /v1/conversations/{id}/history", a.authed(a.history))
 	mux.Handle("POST /v1/upload-token", a.authed(a.uploadToken))
 	mux.Handle("GET /v1/download", a.authed(a.download))
@@ -86,6 +85,14 @@ func main() {
 	mux.Handle("DELETE /v1/moments/{id}/like", a.authed(a.momentUnlike))
 	mux.Handle("POST /v1/moments/{id}/comment", a.authed(a.momentComment))
 	mux.Handle("DELETE /v1/moments/{id}", a.authed(a.deleteMoment))
+	// 三期：搜索 / 群管理 / 头像
+	mux.Handle("GET /v1/search", a.authed(a.searchMessages))
+	mux.Handle("GET /v1/groups/{id}/info", a.authed(a.getGroupInfo))
+	mux.Handle("PUT /v1/groups/{id}/announcement", a.authed(a.setAnnouncement))
+	mux.Handle("DELETE /v1/groups/{id}/members/{uid}", a.authed(a.kickMember))
+	mux.Handle("PUT /v1/groups/{id}/roles", a.authed(a.setGroupRole))
+	mux.Handle("POST /v1/conversations/{id}/members", a.authed(a.addMembersEnhanced))
+	mux.Handle("PUT /v1/me/avatar", a.authed(a.setAvatar))
 
 	log.Printf("[logic] listening on %s", cfg.LogicAddr)
 	log.Fatal(http.ListenAndServe(cfg.LogicAddr, cors(mux)))

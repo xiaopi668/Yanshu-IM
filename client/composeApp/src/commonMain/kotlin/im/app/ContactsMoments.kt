@@ -15,26 +15,10 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import im.client.ImClient
-import im.client.api.acceptContact
-import im.client.api.contactRequests
-import im.client.api.commentMoment
-import im.client.api.contacts
-import im.client.api.createMoment
-import im.client.api.deleteMoment
-import im.client.api.likeMoment
-import im.client.api.momentFeed
-import im.client.api.rejectContact
-import im.client.api.requestContact
-import im.client.api.searchByYid
-import im.client.api.setRemark
-import im.client.api.removeContact
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
-import im.client.api.unlikeMoment
 import androidx.compose.ui.text.font.FontWeight
 import im.client.api.ContactRequestResp
 import im.client.api.ContactResp
@@ -482,22 +466,44 @@ fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
     var msg by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
+    var avatarKey by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
         try {
-            val text = im.client.api.Http.execute("GET", "${client.apiBaseUrl}/v1/me", null, client.myToken).second
-            val me = im.client.api.json.parseToJsonElement(text).jsonObject
-            nickname = me["nickname"]?.jsonPrimitive?.content ?: client.myNickname
-            yid = me["yid"]?.jsonPrimitive?.content ?: "-"
-            username = me["username"]?.jsonPrimitive?.content ?: "-"
-            yidChanged = me["yid_changed"]?.jsonPrimitive?.content == "true"
+            val me = client.api.me(client.myToken)
+            nickname = me.nickname
+            yid = me.yid
+            username = me.username
+            yidChanged = me.yid_changed
+            avatarKey = me.avatar
         } catch (_: Throwable) {}
     }
+    val avatarUrl = if (avatarKey.isBlank()) null else client.api.downloadUrl(client.myToken, avatarKey)
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("我的资料") },
         text = {
-            Column {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                // 头像
+                if (avatarUrl != null) {
+                    NetImage(url = avatarUrl, modifier = Modifier.size(64.dp).clip(RoundedCornerShape(32.dp)))
+                } else {
+                    Box(
+                        Modifier.size(64.dp).clip(RoundedCornerShape(32.dp)).background(MaterialTheme.colorScheme.primaryContainer),
+                        contentAlignment = Alignment.Center,
+                    ) { Text(nickname.take(1), style = MaterialTheme.typography.headlineSmall) }
+                }
+                TextButton(onClick = {
+                    scope.launch {
+                        try {
+                            val f = im.client.file.pickFile() ?: return@launch
+                            val key = client.api.uploadAttachment(client.myToken, "image", f.bytes)
+                            client.api.setAvatar(client.myToken, key)
+                            avatarKey = key
+                        } catch (e: Throwable) { msg = e.message }
+                    }
+                }) { Text("更换头像") }
+                Spacer(Modifier.height(4.dp))
                 Text("用户名：$username", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("雁书号：$yid", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (!yidChanged) {
@@ -532,5 +538,155 @@ fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
             ) { Text("保存") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+// ============ 三期：消息搜索 / 群信息 ============
+
+@Composable
+fun MessageSearchDialog(client: ImClient, onJump: (convId: String) -> Unit, onDismiss: () -> Unit) {
+    var q by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<im.client.api.SearchHitResp>>(emptyList()) }
+    var searched by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("搜索消息") },
+        text = {
+            Column {
+                OutlinedTextField(q, { q = it }, placeholder = { Text("关键词") }, singleLine = true)
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    enabled = q.isNotBlank(),
+                    onClick = {
+                        scope.launch {
+                            try {
+                                results = client.api.searchMessages(client.myToken, q.trim())
+                                searched = true
+                            } catch (_: Throwable) {}
+                        }
+                    },
+                ) { Text("搜索") }
+                Spacer(Modifier.height(8.dp))
+                LazyColumn(Modifier.height(260.dp)) {
+                    items(results, key = { it.server_msg_id }) { h ->
+                        Column(
+                            Modifier.fillMaxWidth().clickable { onJump(h.conversation_id) }.padding(vertical = 6.dp),
+                        ) {
+                            Text(h.text, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+                            Text(
+                                "${h.conversation_id.takeLast(8)} · ${momentTimeOf(h.sent_at)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (searched && results.isEmpty()) {
+                        item { Text("无结果", color = Color.Gray) }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+/** 按会话 ID 打开聊天（搜索跳转用） */
+internal fun scopeLaunchOpenSingleByConv(client: ImClient, convId: String, onDone: (im.client.store.Conversation) -> Unit) {
+    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob()).launch {
+        try {
+            client.refreshConversations()
+            val conv = client.conversations.value.firstOrNull { it.id == convId }
+            if (conv != null) onDone(conv)
+        } catch (_: Throwable) {}
+    }
+}
+
+@Composable
+fun GroupInfoDialog(client: ImClient, convId: String, title: String, onLeft: () -> Unit, onDismiss: () -> Unit) {
+    var info by remember { mutableStateOf<im.client.api.GroupInfoResp?>(null) }
+    var members by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+    var myRole by remember { mutableStateOf("member") }
+    var announcement by remember { mutableStateOf("") }
+    var newId by remember { mutableStateOf("") }
+    var msg by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun reload() {
+        scope.launch {
+            try {
+                info = client.api.groupInfo(client.myToken, convId)
+                announcement = info?.announcement ?: ""
+                members = client.api.conversationMembers(client.myToken, convId).map { it.uid to it.nickname }
+                myRole = if (info?.owner_uid == client.myUid) "owner"
+                else members.firstOrNull { it.first == client.myUid }?.let { "member" } ?: "member"
+            } catch (e: Throwable) {
+                msg = e.message
+            }
+        }
+    }
+    LaunchedEffect(convId) { reload() }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                Text("群公告", style = MaterialTheme.typography.titleSmall)
+                Text(announcement.ifEmpty { "（未设置）" }, style = MaterialTheme.typography.bodySmall)
+                if (info?.owner_uid == client.myUid || myRole == "admin") {
+                    OutlinedTextField(announcement, { announcement = it }, label = { Text("编辑公告") }, minLines = 2)
+                    TextButton(onClick = {
+                        scope.launch { client.api.setAnnouncement(client.myToken, convId, announcement) }
+                    }) { Text("保存公告") }
+                }
+                HorizontalDivider()
+                Text("成员 (${members.size})", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(vertical = 6.dp))
+                LazyColumn(Modifier.height(200.dp)) {
+                    items(members, key = { it.first }) { (uid, nick) ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(nick.ifEmpty { uid.takeLast(8) })
+                                Text(
+                                    if (info?.owner_uid == uid) "群主" else if (myRole == "admin" && uid != info?.owner_uid) "管理员" else "成员",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            // owner/admin 可踢人（不能踢群主）
+                            val canKick = (info?.owner_uid == client.myUid || myRole == "admin") && uid != client.myUid && uid != info?.owner_uid
+                            if (canKick) {
+                                TextButton(onClick = {
+                                    scope.launch { client.api.kickMember(client.myToken, convId, uid); reload() }
+                                }, contentPadding = PaddingValues(0.dp)) { Text("踢出", style = MaterialTheme.typography.labelSmall) }
+                            }
+                        }
+                    }
+                }
+                HorizontalDivider()
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        newId, { newId = it },
+                        placeholder = { Text("成员 UID") }, singleLine = true, modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        enabled = newId.isNotBlank(),
+                        onClick = {
+                            scope.launch {
+                                try {
+                                    client.api.addGroupMembers(client.myToken, convId, listOf(newId))
+                                    newId = ""; reload()
+                                } catch (e: Throwable) { msg = e.message }
+                            }
+                        },
+                    ) { Text("邀请") }
+                }
+                msg?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall) }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
     )
 }

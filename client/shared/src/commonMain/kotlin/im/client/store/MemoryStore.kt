@@ -12,8 +12,8 @@ data class Conversation(
     val readSeq: Long = 0,
 )
 
-/** M2 骨架先用内存缓存；SQLDelight 持久化在 M2.5 接入 */
-class MemoryStore {
+/** 内存缓存层 + SQLite 持久化（Web 平台 db=null，降级为纯内存） */
+class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
     private val _conversations = MutableStateFlow<List<Conversation>>(emptyList())
     val conversations: StateFlow<List<Conversation>> = _conversations
 
@@ -28,7 +28,46 @@ class MemoryStore {
 
     fun setMyUid(uid: String) { myUidFlow.value = uid }
 
+    init {
+        // 启动时从 SQLite 加载缓存（Web 平台无 db，纯内存）
+        val database = db
+        if (database != null) {
+            database.imQueries.loadAllConversations().executeAsList().forEach { c ->
+                _conversations.value = _conversations.value + Conversation(c.id, c.type, c.title, c.last_seq, c.read_seq)
+                _maxSeqs.value = _maxSeqs.value + (c.id to c.last_seq)
+                val recent = database.imQueries.loadRecent(c.id, 50).executeAsList()
+                if (recent.isNotEmpty()) {
+                    _messages.value = _messages.value + (c.id to recent.map { r ->
+                        Msg(
+                            serverMsgId = r.server_msg_id,
+                            conversationId = r.conversation_id,
+                            seq = r.seq,
+                            fromUid = r.from_uid,
+                            msgType = im.client.proto.MsgType.from(r.msg_type.toInt()),
+                            text = r.text ?: "",
+                            attachment = r.attachment?.let { runCatching { kotlinx.serialization.json.Json.decodeFromString<im.client.proto.Attachment>(it) }.getOrNull() },
+                            sentAt = r.sent_at,
+                            clientMsgId = r.client_msg_id,
+                            sending = r.pending == 1L,
+                        )
+                    })
+                }
+            }
+        }
+    }
+
+    /** 清空本地缓存（换账号登录时） */
+    fun clearCaches() {
+        db?.imQueries?.clearConversation("")
+        _conversations.value = emptyList()
+        _messages.value = emptyMap()
+        _maxSeqs.value = emptyMap()
+    }
+
     fun setConversations(list: List<Conversation>) {
+        db?.imQueries?.let { queries ->
+            list.forEach { c -> queries.upsertConversation(c.id, c.type, c.title, c.lastSeq, c.readSeq) }
+        }
         _conversations.value = list.sortedWith(
             compareByDescending<Conversation> { it.lastSeq }.thenBy { it.id }
         )
@@ -38,6 +77,12 @@ class MemoryStore {
     }
 
     fun upsertMessage(msg: Msg) {
+        db?.imQueries?.upsertMessage(
+            msg.serverMsgId.ifEmpty { "p_" + (msg.clientMsgId ?: msg.sentAt.toString()) },
+            msg.conversationId, msg.seq, msg.fromUid, msg.msgType.v.toLong(), msg.text,
+            msg.attachment?.let { runCatching { kotlinx.serialization.json.Json.encodeToString(it) }.getOrNull() },
+            msg.sentAt, msg.clientMsgId, if (msg.sending) 1L else 0L,
+        )
         val cid = msg.conversationId
         val current = _messages.value[cid] ?: emptyList()
         // 按 server_msg_id 去重后追加，按 seq 排序
@@ -53,6 +98,7 @@ class MemoryStore {
 
     /** 发送成功确认：把 pending 消息标记为已确认 */
     fun confirmMessage(clientMsgId: String, serverMsgId: String, seq: Long, conversationId: String) {
+        db?.imQueries?.markConfirmed(clientMsgId)
         val cid = conversationId
         val current = _messages.value[cid] ?: emptyList()
         val next = current.filter { it.clientMsgId != clientMsgId || !it.sending }
@@ -60,6 +106,7 @@ class MemoryStore {
     }
 
     fun removePending(clientMsgId: String, conversationId: String) {
+        db?.imQueries?.deletePending(clientMsgId)
         val cid = conversationId
         val current = _messages.value[cid] ?: emptyList()
         _messages.value = _messages.value + (cid to current.filter { it.clientMsgId != clientMsgId })

@@ -26,7 +26,7 @@ class ImClient(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob()),
 ) {
     val api = Api(apiBaseUrl)
-    private val store = MemoryStore()
+    private val store = MemoryStore(im.client.db.createDriver()?.let { im.client.db.ImDatabase(it) })
     val connection = ImConnection(gatewayWsUrl)
     val callController = CallController(connection, "")
 
@@ -53,9 +53,8 @@ class ImClient(
         myUid = resp.uid
         myToken = resp.token
         store.setMyUid(resp.uid)
-        val me = api.me(resp.token)
-        myNickname = me.nickname
         callController.myUid = resp.uid
+        myNickname = api.me(resp.token).nickname
         return resp.uid to resp.token
     }
 

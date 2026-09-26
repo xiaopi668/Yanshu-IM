@@ -9,15 +9,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import im.client.api.Api
-import im.client.api.acceptContact
-import im.client.api.contactRequests
-import im.client.api.contacts
-import im.client.api.likeMoment
-import im.client.api.momentFeed
-import im.client.api.commentMoment
-import im.client.api.createMoment
-import im.client.api.requestContact
-import im.client.api.searchByYid
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.withTimeout
@@ -195,4 +186,31 @@ suspend internal fun Api.registerRaw(username: String, password: String, nicknam
 suspend fun Api.meYid(token: String): String {
     val text = rawRequest("GET", "/v1/me", null, token)
     return im.client.api.json.parseToJsonElement(text).jsonObject["yid"]?.jsonPrimitive?.content ?: ""
+}
+
+
+class Phase3E2eTest {
+    private val apiBase = System.getenv("IM_TEST_API") ?: "http://127.0.0.1:10002"
+
+    @Test
+    fun messageSearch() = runBlocking {
+        val api = Api(apiBase)
+        val suffix = System.currentTimeMillis().toString(36)
+        val rA = api.registerRaw("t4a_$suffix", "secret1", "A4", "t4a_$suffix")
+        val tokA = rA.token
+        val rB = api.registerRaw("t4b_$suffix", "secret1", "B4", "t4b_$suffix")
+        val uidB = rB.uid; val tokB = rB.token
+        // 建会话并发送带关键词的消息
+        val convId = api.createSingle(tokA, uidB)
+        val client = ImClient(apiBase, System.getenv("IM_TEST_WS") ?: "ws://127.0.0.1:10001/ws")
+        client.wireCallbacks()
+        client.login("t4a_$suffix", "secret1")
+        client.startSession()
+        client.connectionState.first { it == im.client.net.ConnState.Authenticated }
+        client.sendMessage(convId, "XYZZY $suffix")
+        kotlinx.coroutines.delay(800)
+        val hits = api.searchMessages(tokB, "XYZZY $suffix")
+        assertTrue(hits.any { it.text.contains("XYZZY") && it.conversation_id == convId })
+        client.stop()
+    }
 }
