@@ -57,7 +57,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("IM · 登录", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("雁书 · 登录", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(24.dp))
         OutlinedTextField(apiBase, { apiBase = it }, label = { Text("API 地址") }, modifier = Modifier.fillMaxWidth(0.6f))
         Spacer(Modifier.height(8.dp))

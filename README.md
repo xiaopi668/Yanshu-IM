@@ -1,4 +1,4 @@
-# IM — 自研跨平台即时通讯
+# 雁书 Yanshu — 自研跨平台即时通讯
 
 支持 **Android / Windows / Linux / Web** 四端的私有化部署 IM。服务端 Go，客户端 Kotlin Multiplatform + Compose Multiplatform，音视频用自托管 LiveKit SFU。
 

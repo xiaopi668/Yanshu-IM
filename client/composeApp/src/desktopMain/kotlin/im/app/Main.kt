@@ -18,7 +18,7 @@ fun main() {
         val height = (screen.height * 0.98).toInt().dp
         Window(
             onCloseRequest = ::exitApplication,
-            title = "IM",
+            title = "雁书",
             state = rememberWindowState(width = width, height = height),
         ) {
             AppRoot()
