@@ -47,12 +47,11 @@ services:
     restart: unless-stopped
     image: livekit/livekit-server:latest
     command: --config /etc/livekit.yaml
+    network_mode: host
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
     ports:
       - "7880:7880"
-      - "7881:7881"
-      - "50000-50200:50000-50200/udp"
 
   coturn:
     restart: unless-stopped
