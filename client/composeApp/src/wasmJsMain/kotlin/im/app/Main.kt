@@ -8,6 +8,7 @@ import kotlin.js.JsExport
 
 @OptIn(ExperimentalComposeUiApi::class)
 fun main() {
+    applyWebDefaults()
     ComposeViewport(document.getElementById("composeTarget")!!) {
         AppRoot()
     }

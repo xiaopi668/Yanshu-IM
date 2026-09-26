@@ -28,8 +28,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
-private const val DEFAULT_API = "http://127.0.0.1:10002"
-private const val DEFAULT_WS = "ws://127.0.0.1:10001/ws"
+internal var DEFAULT_API = "http://127.0.0.1:10002"
+internal var DEFAULT_WS = "ws://127.0.0.1:10001/ws"
 
 @Composable
 fun AppRoot() {
