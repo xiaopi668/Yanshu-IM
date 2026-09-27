@@ -57,6 +57,7 @@ class ImClient(
         val me = api.me(token)
         myUid = me.uid
         myNickname = me.nickname
+        bindCacheOwner(me.uid)
         store.setMyUid(me.uid)
         callController.myUid = me.uid
         return me.uid
@@ -66,10 +67,22 @@ class ImClient(
         val resp = api.login(username, password, platformOf())
         myUid = resp.uid
         myToken = resp.token
+        bindCacheOwner(resp.uid)
         store.setMyUid(resp.uid)
         callController.myUid = resp.uid
         myNickname = api.me(resp.token).nickname
         return resp.uid to resp.token
+    }
+
+    /**
+     * 登录成功后绑定本地缓存归属账号：与缓存归属不一致（换账号/首次）就清空本地缓存，
+     * 避免读到上一个账号的 message_cache / conversation_cache（Web 端 db=null，内部安全跳过）。
+     */
+    private fun bindCacheOwner(uid: String) {
+        if (store.cacheOwnerUid != uid) {
+            store.clearCaches()
+            store.setCacheOwner(uid)
+        }
     }
 
     suspend fun startSession() {

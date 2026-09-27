@@ -2,6 +2,9 @@ package im.client.proto
 
 // 最小 protobuf 编解码（wire type 0=varint, 2=length-delimited），只支持 IM 协议所需子集。
 
+/** 解码错误：字节流越界/格式非法时抛出，由 Frames.decodeFrame 捕获后丢弃该帧 */
+class ProtoDecodeException(message: String) : RuntimeException(message)
+
 class ProtoWriter {
     private val out = ArrayList<Byte>(256)
 
@@ -54,15 +57,23 @@ class ProtoReader(private val data: ByteArray) {
             val field = (key ushr 3).toInt()
             when (val wireType = (key and 0x7).toInt()) {
                 0 -> map.getOrPut(field) { mutableListOf() }.add(Field(wireType, readVarint(), null))
-                1 -> { pos += 8; continue }
+                1 -> {
+                    if (data.size - pos < 8) throw ProtoDecodeException("fixed64 字段越界: pos=$pos, size=${data.size}")
+                    pos += 8; continue
+                }
                 2 -> {
                     val len = readVarint().toInt()
+                    // 越界（含 len 为负）抛解码错误，不能让 copyOfRange 抛 IndexOutOfBounds
+                    if (len < 0 || len > data.size - pos) throw ProtoDecodeException("length-delimited 字段越界: len=$len, pos=$pos, size=${data.size}")
                     val b = data.copyOfRange(pos, pos + len)
                     pos += len
                     map.getOrPut(field) { mutableListOf() }.add(Field(wireType, null, b))
                 }
-                5 -> { pos += 4; continue }
-                else -> throw IllegalArgumentException("unsupported wire type $wireType")
+                5 -> {
+                    if (data.size - pos < 4) throw ProtoDecodeException("fixed32 字段越界: pos=$pos, size=${data.size}")
+                    pos += 4; continue
+                }
+                else -> throw ProtoDecodeException("不支持的 wire type $wireType")
             }
         }
         return map
@@ -72,6 +83,7 @@ class ProtoReader(private val data: ByteArray) {
         var shift = 0
         var result = 0L
         while (true) {
+            if (pos >= data.size) throw ProtoDecodeException("varint 读取越界: pos=$pos, size=${data.size}")
             val b = data[pos++].toInt() and 0xFF
             result = result or ((b and 0x7F).toLong() shl shift)
             if (b and 0x80 == 0) return result

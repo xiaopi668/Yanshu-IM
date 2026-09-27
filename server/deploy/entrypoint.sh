@@ -12,8 +12,13 @@ echo "[entrypoint] waiting for mysql..."
 until mysql -h"$IM_MYSQL_HOST" -uroot -p"$IM_MYSQL_PASSWORD" -e "SELECT 1" >/dev/null 2>&1; do
   sleep 2
 done
-mysql -h"$IM_MYSQL_HOST" -uroot -p"$IM_MYSQL_PASSWORD" < /usr/local/share/im/schema.sql || true
-echo "[entrypoint] schema applied"
+# 多个容器可能同时启动并重复执行 DDL，IF NOT EXISTS 冲突属正常，但真实错误不能静默吞掉
+if mysql -h"$IM_MYSQL_HOST" -uroot -p"$IM_MYSQL_PASSWORD" < /usr/local/share/im/schema.sql 2>/tmp/im-schema.err; then
+  echo "[entrypoint] schema applied"
+else
+  echo "[entrypoint] 警告: schema 执行有错误（多容器并发建表时常见，可忽略；否则需排查）:"
+  sed 's/^/    /' /tmp/im-schema.err
+fi
 
 case "${IM_ROLE}" in
   gateway)

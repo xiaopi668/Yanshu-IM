@@ -25,7 +25,6 @@ import im.client.file.pickFile
 import im.client.openUrl
 import im.client.registerTurnstileCallback
 import im.client.renderTurnstileWidget
-import im.client.registerTurnstileCallback
 import im.client.wireCallbacks
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map

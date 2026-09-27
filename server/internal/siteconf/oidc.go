@@ -15,8 +15,8 @@ import (
 
 // discovery 缓存（进程内 1 小时）
 var (
-	discMu      sync.Mutex
-	discovered  = map[string]oidcDiscovery{}
+	discMu     sync.Mutex
+	discovered = map[string]oidcDiscovery{}
 )
 
 type oidcDiscovery struct {

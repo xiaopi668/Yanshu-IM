@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"im/internal/auth"
 	"im/internal/config"
 	"im/internal/hub"
@@ -20,7 +22,6 @@ import (
 	"im/internal/migrate"
 	"im/internal/siteconf"
 	"im/internal/storage"
-	"github.com/redis/go-redis/v9"
 	"im/internal/store"
 )
 
@@ -37,6 +38,9 @@ var yidRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{4,19}$`)
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.CheckSecrets(); err != nil {
+		log.Fatalf("[logic] %v", err)
+	}
 	sqldb, err := store.NewMySQL(cfg.MySQLDSN)
 	if err != nil {
 		log.Fatalf("mysql: %v", err)
@@ -45,6 +49,8 @@ func main() {
 	rdb := store.NewRedis(cfg.RedisAddr, cfg.RedisPass)
 	db := store.Wrap(sqldb)
 	h := hub.New()
+	// 接入 Redis 总线：logic 自身不持有 WS 连接，只发布（好友/群事件推给 gateway）
+	h.AttachBus(context.Background(), rdb, false)
 	msgSvc := messaging.New(sqldb, rdb, h, 2)
 	minioSvc, err := storage.NewObjectStore(cfg)
 	if err != nil {
@@ -103,13 +109,26 @@ func main() {
 	mux.Handle("PUT /v1/me/avatar", a.authed(a.setAvatar))
 
 	log.Printf("[logic] listening on %s", cfg.LogicAddr)
-	log.Fatal(http.ListenAndServe(cfg.LogicAddr, cors(mux)))
+	log.Fatal(http.ListenAndServe(cfg.LogicAddr, cors(cfg, mux)))
 }
 
-// cors 允许 Web 端跨源调用（私有化部署场景，浏览器客户端与 API 常不同源）
-func cors(next http.Handler) http.Handler {
+// cors 允许 Web 端跨源调用（私有化部署场景，浏览器客户端与 API 常不同源）。
+// 配置了 IM_ALLOWED_ORIGINS 时严格匹配并回显该来源，否则保持原有的 * 行为。
+func cors(cfg *config.Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if len(cfg.AllowedOrigins) > 0 {
+			if !cfg.OriginAllowed(origin) {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			if origin != "" {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			}
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+		w.Header().Add("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
@@ -165,6 +184,10 @@ func genID() string {
 }
 
 func (a *apiv1) register(w http.ResponseWriter, r *http.Request) {
+	if err := a.rateLimit(r, "register", a.cfg.AuthRateLimit, 5*time.Minute); err != nil {
+		fail(w, 429, err)
+		return
+	}
 	var req struct {
 		Username       string `json:"username"`
 		Password       string `json:"password"`
@@ -189,7 +212,7 @@ func (a *apiv1) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if acfg.TurnstileEnabled {
-		if err := a.checkTurnstile(acfg, req.TurnstileToken, clientIP(r)); err != nil {
+		if err := a.checkTurnstile(acfg, req.TurnstileToken, clientIP(r, a.cfg.TrustProxy)); err != nil {
 			fail(w, 403, err)
 			return
 		}
@@ -250,6 +273,10 @@ func (a *apiv1) register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *apiv1) login(w http.ResponseWriter, r *http.Request) {
+	if err := a.rateLimit(r, "login", a.cfg.AuthRateLimit, 5*time.Minute); err != nil {
+		fail(w, 429, err)
+		return
+	}
 	var req struct {
 		Username       string `json:"username"`
 		Password       string `json:"password"`
@@ -277,7 +304,7 @@ func (a *apiv1) login(w http.ResponseWriter, r *http.Request) {
 	}
 	acfg := a.siteConf()
 	if acfg.TurnstileEnabled {
-		if err := a.checkTurnstile(acfg, req.TurnstileToken, clientIP(r)); err != nil {
+		if err := a.checkTurnstile(acfg, req.TurnstileToken, clientIP(r, a.cfg.TrustProxy)); err != nil {
 			fail(w, 403, err)
 			return
 		}

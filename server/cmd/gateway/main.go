@@ -4,10 +4,11 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"log"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -29,46 +30,80 @@ const (
 	pongWait      = 60 * time.Second
 	pingPeriod    = 25 * time.Second
 	maxFrameSize  = 1 << 22 // 4MB（多媒体消息 base64 兜底）
+	sendQueueSize = 512     // 每连接出站队列长度；写循环是该连接的唯一写者
 )
 
 // ---------- conn ----------
 
+// conn 一条连接。写操作统一收敛到 writeLoop，避免多协程并发写同一 websocket，
+// 也避免群发时被慢连接的同步写阻塞住发送方的读循环。
 type conn struct {
-	c        *websocket.Conn
-	uid      string
-	platform string
-	connID   string
-	hub      *hub.Hub
-	mu       sync.Mutex
-	closed   bool
+	c         *websocket.Conn
+	uid       string
+	platform  string
+	connID    string
+	hub       *hub.Hub
+	sendq     chan []byte
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func (c *conn) UID() string      { return c.uid }
 func (c *conn) Platform() string { return c.platform }
 
+// Send 非阻塞入队；队列满说明消费不过来，直接断开该连接，
+// 客户端重连后会按 seq 增量拉补，不会丢消息。
 func (c *conn) Send(f *pb.Frame) bool {
 	b, err := protoMarshal(f)
 	if err != nil {
 		return false
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
+	select {
+	case <-c.done:
+		return false
+	default:
+	}
+	select {
+	case c.sendq <- b:
+		return true
+	default:
+		c.close()
 		return false
 	}
-	_ = c.c.SetWriteDeadline(time.Now().Add(writeTimeout))
-	return c.c.WriteMessage(websocket.BinaryMessage, b) == nil
 }
 
 func (c *conn) close() {
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return
+	c.closeOnce.Do(func() {
+		close(c.done)
+		_ = c.c.Close()
+	})
+}
+
+// Close hub.Conn 接口：被封禁等场景由服务端主动断开
+func (c *conn) Close() { c.close() }
+
+// writeLoop 连接的唯一写者，同时按 pingPeriod 发协议层 ping 探活
+func (c *conn) writeLoop() {
+	ticker := time.NewTicker(pingPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case b := <-c.sendq:
+			_ = c.c.SetWriteDeadline(time.Now().Add(writeTimeout))
+			if err := c.c.WriteMessage(websocket.BinaryMessage, b); err != nil {
+				c.close()
+				return
+			}
+		case <-ticker.C:
+			_ = c.c.SetWriteDeadline(time.Now().Add(writeTimeout))
+			if err := c.c.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeTimeout)); err != nil {
+				c.close()
+				return
+			}
+		case <-c.done:
+			return
+		}
 	}
-	c.closed = true
-	c.mu.Unlock()
-	_ = c.c.Close()
 }
 
 // ---------- server ----------
@@ -84,12 +119,17 @@ type server struct {
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.CheckSecrets(); err != nil {
+		log.Fatalf("[gateway] %v", err)
+	}
 	db, err := store.NewMySQL(cfg.MySQLDSN)
 	if err != nil {
 		log.Fatalf("mysql: %v", err)
 	}
 	rdb := store.NewRedis(cfg.RedisAddr, cfg.RedisPass)
 	h := hub.New()
+	// 接入 Redis 总线：gateway 持有 WS 连接，既要广播也要订阅其他进程的投递
+	h.AttachBus(context.Background(), rdb, true)
 	msgSvc := messaging.New(db, rdb, h, 1)
 	callMgr := call.NewManager(cfg.LiveKitAPIKey, cfg.LiveKitAPISecret)
 	s := &server{
@@ -97,7 +137,10 @@ func main() {
 		upgr: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
-			CheckOrigin:     func(r *http.Request) bool { return true },
+			// 防跨站 WebSocket 劫持：未配置白名单时保持原有放行（原生客户端与本地开发）
+			CheckOrigin: func(r *http.Request) bool {
+				return cfg.OriginAllowed(r.Header.Get("Origin"))
+			},
 		},
 	}
 	mux := http.NewServeMux()
@@ -109,8 +152,63 @@ func main() {
 			time.Sleep(30 * time.Second)
 		}
 	}()
+	// 通话邀请超时：清理超时未接听的邀请并向双方推 CALL_TIMEOUT
+	go s.callTimeoutLoop()
+	// 封禁即时生效：管理后台封禁只改库，不踢的话在线连接照常收发
+	go s.kickDisabledLoop()
 	log.Printf("[gateway] listening on %s", cfg.GatewayAddr)
 	log.Fatal(http.ListenAndServe(cfg.GatewayAddr, mux))
+}
+
+// kickDisabledLoop 周期扫描被封禁用户并踢下线。
+// 一次全表捞 disabled 名单（user_state 里只有异常账号，通常很小），只对确实在线的做踢除。
+func (s *server) kickDisabledLoop() {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		rows, err := s.db.Query(`SELECT uid FROM user_state WHERE disabled=1`)
+		if err != nil {
+			continue
+		}
+		var uids []string
+		for rows.Next() {
+			var u string
+			if rows.Scan(&u) == nil {
+				uids = append(uids, u)
+			}
+		}
+		rows.Close()
+		for _, uid := range uids {
+			if s.hub.IsOnline(uid) {
+				s.hub.Kick(uid)
+				log.Printf("[gateway] 封禁用户已踢下线 uid=%s", uid)
+			}
+		}
+	}
+}
+
+// callTimeoutLoop 周期清理超时未接听的邀请与僵死会话
+func (s *server) callTimeoutLoop() {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		for _, inv := range s.call.PollExpired() {
+			frame := &pb.Frame{Body: &pb.Frame_CallSignal{CallSignal: &pb.CallSignal{
+				CallId: inv.CallID, Event: pb.CallEventType_CALL_TIMEOUT,
+			}}}
+			s.hub.SendToUser(inv.ToUID, frame)
+			s.hub.SendToUser(inv.FromUID, frame)
+			log.Printf("[call] invite timeout call=%s from=%s to=%s", inv.CallID, inv.FromUID, inv.ToUID)
+		}
+		for _, sess := range s.call.PollStaleSessions(4 * time.Hour) {
+			s.hub.SendToUser(sess.A, &pb.Frame{Body: &pb.Frame_CallSignal{CallSignal: &pb.CallSignal{
+				CallId: sess.CallID, Event: pb.CallEventType_CALL_HANGUP,
+			}}})
+			s.hub.SendToUser(sess.B, &pb.Frame{Body: &pb.Frame_CallSignal{CallSignal: &pb.CallSignal{
+				CallId: sess.CallID, Event: pb.CallEventType_CALL_HANGUP,
+			}}})
+		}
+	}
 }
 
 func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +217,12 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ws.SetReadLimit(maxFrameSize)
-	c := &conn{c: ws, hub: s.hub, connID: randID()}
+	// 协议层 ping 的 pong 回包刷新读超时
+	ws.SetPongHandler(func(string) error {
+		return ws.SetReadDeadline(time.Now().Add(pongWait))
+	})
+	c := &conn{c: ws, hub: s.hub, connID: randID(), sendq: make(chan []byte, sendQueueSize), done: make(chan struct{})}
+	go c.writeLoop()
 
 	defer func() {
 		c.close()
@@ -281,6 +384,7 @@ func (s *server) handleCallSignal(ctx context.Context, c *conn, sig *pb.CallSign
 			if c.uid == sess.A {
 				peer = sess.B
 			}
+			s.call.End(sig.CallId) // 释放会话，避免 calls 常驻内存
 			s.hub.SendToUser(peer, &pb.Frame{Body: &pb.Frame_CallSignal{CallSignal: &pb.CallSignal{
 				CallId: sig.CallId, Event: pb.CallEventType_CALL_HANGUP,
 			}}})
@@ -288,9 +392,11 @@ func (s *server) handleCallSignal(ctx context.Context, c *conn, sig *pb.CallSign
 	}
 }
 
-// 简单连接 ID：纳秒级时间戳足够区分本进程内连接
+// randID 连接 ID：16 位随机 hex，避免纳秒时间戳在同进程内碰撞导致 hub 条目互相覆盖
 func randID() string {
-	return strconv.FormatInt(time.Now().UnixNano(), 10)
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // reportOnline gateway 周期上报在线数到 Redis（供管理后台统计）
@@ -305,4 +411,3 @@ func protoMarshal(f *pb.Frame) ([]byte, error) {
 func protoUnmarshal(b []byte, f *pb.Frame) error {
 	return proto.Unmarshal(b, f)
 }
-

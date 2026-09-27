@@ -43,3 +43,12 @@ VALUES (?, ?, ?, ?, ?);
 
 clearConversation:
 DELETE FROM message_cache WHERE conversation_id = ?;
+
+loadPending:
+SELECT * FROM message_cache WHERE client_msg_id = ? AND pending = 1 LIMIT 1;
+
+clearAllMessages:
+DELETE FROM message_cache;
+
+clearAllConversations:
+DELETE FROM conversation_cache;

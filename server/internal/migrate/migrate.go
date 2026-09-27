@@ -1,10 +1,16 @@
 // Package migrate 幂等迁移：为已存在的旧库补列/补表（新部署直接由 schema.sql 建全）。
+// 通过 MySQL 命名锁串行化，避免 logic / admin 多个进程同时 ALTER 同一张表。
 package migrate
 
 import (
+	"crypto/sha1"
 	"database/sql"
+	"encoding/hex"
+	"errors"
 	"log"
-	"strings"
+	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 var statements = []string{
@@ -20,17 +26,79 @@ var statements = []string{
 	`ALTER TABLE user ADD COLUMN email VARCHAR(128) NULL`,
 }
 
-// Run 逐条执行，忽略"已存在"类错误。
+const lockName = "im:schema_migrate"
+
+// Run 逐条执行；已执行过的语句记录在 schema_migrations，"已存在"类错误同样视为成功。
 func Run(db *sql.DB) {
+	if _, err := db.Exec(
+		`CREATE TABLE IF NOT EXISTS schema_migrations(
+			id VARCHAR(40) PRIMARY KEY,
+			applied_at BIGINT NOT NULL
+		)`); err != nil {
+		log.Printf("[migrate] 建 schema_migrations 失败: %v", err)
+	}
+
+	// 多进程同时启动时串行化，避免并发 ALTER 冲突
+	locked := grabLock(db)
+	defer releaseLock(db, locked)
+
 	for _, q := range statements {
+		id := statementID(q)
+		var one int
+		if err := db.QueryRow(`SELECT 1 FROM schema_migrations WHERE id=?`, id).Scan(&one); err == nil {
+			continue
+		}
 		if _, err := db.Exec(q); err != nil {
-			s := err.Error()
-			if strings.Contains(s, "1060") || strings.Contains(s, "1061") ||
-				strings.Contains(s, "Duplicate column") || strings.Contains(s, "Duplicate key") {
+			if !alreadyApplied(err) {
+				log.Printf("[migrate] %s: %v", q, err)
 				continue
 			}
-			log.Printf("[migrate] %s: %v", q, err)
+			// 语句本身不幂等但效果已存在（列/键已建），照样记账
+		}
+		if _, err := db.Exec(
+			`INSERT INTO schema_migrations(id, applied_at) VALUES(?,?) ON DUPLICATE KEY UPDATE id=id`,
+			id, time.Now().UnixMilli()); err != nil {
+			log.Printf("[migrate] 记账失败 %s: %v", id, err)
 		}
 	}
 	log.Println("[migrate] done")
+}
+
+// grabLock 取 MySQL 命名锁；取不到（30s 超时）时返回 false，调用方仍继续执行
+func grabLock(db *sql.DB) bool {
+	var got sql.NullInt64
+	if err := db.QueryRow(`SELECT GET_LOCK(?, 30)`, lockName).Scan(&got); err != nil {
+		log.Printf("[migrate] 取锁失败: %v", err)
+		return false
+	}
+	return got.Valid && got.Int64 == 1
+}
+
+func releaseLock(db *sql.DB, held bool) {
+	if !held {
+		return
+	}
+	_, _ = db.Exec(`SELECT RELEASE_LOCK(?)`, lockName)
+}
+
+// alreadyApplied 判断是否为"重复列/重复键/重复数据"这类已生效错误。
+// 用 MySQL 错误码而非字符串匹配，避免驱动或服务器文案变化导致失效。
+func alreadyApplied(err error) bool {
+	var me *mysql.MySQLError
+	if !errors.As(err, &me) {
+		return false
+	}
+	switch me.Number {
+	case 1060, // Duplicate column name
+		1061, // Duplicate key name
+		1062, // Duplicate entry（回填 yid 撞唯一键）
+		1091: // Can't DROP; check that column/key exists
+		return true
+	}
+	return false
+}
+
+func statementID(q string) string {
+	sum := sha1.Sum([]byte(q))
+	return hex.EncodeToString(sum[:])[:40]
 }

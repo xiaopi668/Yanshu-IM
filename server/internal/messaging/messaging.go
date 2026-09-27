@@ -5,11 +5,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/redis/go-redis/v9"
 
 	"im/internal/hub"
@@ -58,54 +60,125 @@ func New(db *sql.DB, rdb *redis.Client, h *hub.Hub, node int64) *Service {
 	return &Service{DB: db, RDB: rdb, Hub: h, ID: NewSnowflake(node)}
 }
 
-// NextSeq 会话内单调递增 seq（Redis INCR，原子）
+// seqScript 先把计数器抬到 DB 下界再 INCR，保证 Redis 被清空/重建后不会从 1 重新计数
+// 而与 message 表主键 (conversation_id, seq) 冲突。
+const seqScript = `
+local key = KEYS[1]
+local floor = tonumber(ARGV[1])
+local cur = redis.call('GET', key)
+if (not cur) or tonumber(cur) < floor then
+  redis.call('SET', key, floor)
+end
+return redis.call('INCR', key)
+`
+
+// NextSeq 会话内单调递增 seq（Redis INCR，原子）。
+// 下界取 DB 中该会话的 MAX(seq)，因此 Redis 数据丢失也能自愈。
 func (s *Service) NextSeq(ctx context.Context, convID string) (uint64, error) {
-	n, err := s.RDB.Incr(ctx, "im:seq:"+convID).Result()
+	floor, err := s.maxSeqInDB(ctx, convID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := s.RDB.Eval(ctx, seqScript, []string{"im:seq:" + convID}, floor).Int64()
 	if err != nil {
 		return 0, err
 	}
 	return uint64(n), nil
 }
 
-// MaxSeq 返回服务端某会话最新 seq；Redis 无记录时回落 DB
-func (s *Service) MaxSeq(ctx context.Context, convID string) (uint64, error) {
-	n, err := s.RDB.Get(ctx, "im:seq:"+convID).Uint64()
-	if err == nil {
-		return n, nil
-	}
-	if err != redis.Nil {
-		return 0, err
-	}
+// maxSeqInDB 该会话在库中的最大 seq（无消息时为 0）
+func (s *Service) maxSeqInDB(ctx context.Context, convID string) (uint64, error) {
 	var max sql.NullInt64
-	err = s.DB.QueryRowContext(ctx,
+	err := s.DB.QueryRowContext(ctx,
 		`SELECT MAX(seq) FROM message WHERE conversation_id=?`, convID).Scan(&max)
 	if err != nil {
 		return 0, err
 	}
+	if max.Int64 < 0 {
+		return 0, nil
+	}
 	return uint64(max.Int64), nil
 }
 
-// MaxSeqs 批量取用户所有会话的最新 seq（用于鉴权后的概览）
+// MaxSeq 返回服务端某会话最新 seq；取 Redis 与 DB 的较大者
+// （Redis 可能因分配后插入失败而超前，也可能因重建而落后）
+func (s *Service) MaxSeq(ctx context.Context, convID string) (uint64, error) {
+	dbMax, err := s.maxSeqInDB(ctx, convID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := s.RDB.Get(ctx, "im:seq:"+convID).Uint64()
+	if err == nil && n > dbMax {
+		return n, nil
+	}
+	if err != nil && err != redis.Nil {
+		return 0, err
+	}
+	return dbMax, nil
+}
+
+// MaxSeqs 批量取用户所有会话的最新 seq（用于鉴权后的概览）。
+// DB 侧一次 GROUP BY 取回，避免逐会话查询。
 func (s *Service) MaxSeqs(ctx context.Context, uid string) (map[string]uint64, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT conversation_id FROM conversation_member WHERE uid=?`, uid)
+		`SELECT cm.conversation_id, IFNULL(MAX(m.seq),0)
+		 FROM conversation_member cm
+		 LEFT JOIN message m ON m.conversation_id = cm.conversation_id
+		 WHERE cm.uid=? GROUP BY cm.conversation_id`, uid)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[string]uint64{}
-	for rows.Next() {
-		var cid string
-		if err := rows.Scan(&cid); err != nil {
-			return nil, err
-		}
-		seq, err := s.MaxSeq(ctx, cid)
-		if err != nil {
-			return nil, err
-		}
-		out[cid] = seq
+	type pair struct {
+		cid string
+		db  uint64
 	}
-	return out, rows.Err()
+	var list []pair
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.cid, &p.db); err != nil {
+			return nil, err
+		}
+		list = append(list, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := map[string]uint64{}
+	if len(list) == 0 {
+		return out, nil
+	}
+	// Redis 侧一次 MGET 取回，避免逐会话往返
+	keys := make([]string, len(list))
+	for i, p := range list {
+		keys[i] = "im:seq:" + p.cid
+	}
+	vals, err := s.RDB.MGet(ctx, keys...).Result()
+	if err != nil && err != redis.Nil {
+		return nil, err
+	}
+	for i, p := range list {
+		// Redis 可能超前（分配后插入失败）也可能落后（重建），取较大者
+		max := p.db
+		if i < len(vals) {
+			if n, err := strconv.ParseUint(toString(vals[i]), 10, 64); err == nil && n > max {
+				max = n
+			}
+		}
+		out[p.cid] = max
+	}
+	return out, nil
+}
+
+// toString 把 MGET 的结果转成字符串（nil 表示 key 不存在）
+func toString(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprint(v)
 }
 
 // Send 发送消息：幂等去重 → 分配 seq → 落库 → 在线投递。
@@ -131,10 +204,6 @@ func (s *Service) Send(ctx context.Context, fromUID string, m *pb.MsgSend) (stri
 		return "", 0, err
 	}
 
-	seq, err := s.NextSeq(ctx, convID)
-	if err != nil {
-		return "", 0, err
-	}
 	msgID := s.ID.Next()
 	sentAt := time.Now().UnixMilli()
 
@@ -144,26 +213,33 @@ func (s *Service) Send(ctx context.Context, fromUID string, m *pb.MsgSend) (stri
 	}
 	mentionJSON, _ := json.Marshal(m.MentionUids)
 
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return "", 0, err
-	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx,
-		`INSERT INTO message(server_msg_id, conversation_id, seq, from_uid, msg_type, text, attachment, mention_uids, sent_at)
-		 VALUES(?,?,?,?,?,?,?,?,?)`,
-		msgID, convID, seq, fromUID, int(m.MsgType), m.Text, string(attJSON), string(mentionJSON), sentAt); err != nil {
-		return "", 0, err
-	}
-	if m.ClientMsgId != "" {
-		if _, err = tx.ExecContext(ctx,
-			`INSERT INTO message_client_map(client_msg_id, from_uid, server_msg_id, seq) VALUES(?,?,?,?)`,
-			m.ClientMsgId, fromUID, msgID, seq); err != nil {
+	// 分配 seq 并落库。撞 message 主键说明 Redis 计数器落后于 DB（如 Redis 曾被清空），
+	// NextSeq 下一轮会以 DB MAX 为下界重新取号，因此这里重试即可自愈。
+	var seq uint64
+	for attempt := 0; ; attempt++ {
+		var err error
+		seq, err = s.NextSeq(ctx, convID)
+		if err != nil {
 			return "", 0, err
 		}
-	}
-	if err = tx.Commit(); err != nil {
-		return "", 0, err
+		stage, err := s.insertMessage(ctx, fromUID, m, msgID, seq, sentAt, string(attJSON), string(mentionJSON))
+		if err == nil {
+			break
+		}
+		if attempt >= 3 {
+			return "", 0, err
+		}
+		if !isDupKey(err) {
+			return "", 0, err
+		}
+		if stage == stageClientMap {
+			// 并发重试撞了 client_msg_id 幂等键：回读已存结果，保证幂等语义
+			if oldID, oldSeq, ok := s.lookupClientMsg(ctx, fromUID, m.ClientMsgId); ok {
+				return oldID, oldSeq, nil
+			}
+			return "", 0, err
+		}
+		// stageMessage：seq 冲突，重试重新取号
 	}
 
 	notify := &pb.MsgNotify{
@@ -178,14 +254,12 @@ func (s *Service) Send(ctx context.Context, fromUID string, m *pb.MsgSend) (stri
 		MentionUids:    m.MentionUids,
 	}
 	frame := &pb.Frame{Body: &pb.Frame_MsgNotify{MsgNotify: notify}}
-	// 投递给会话所有成员（含发送者其他端）
+	// 投递给会话所有成员（含发送者其他端）；跨进程只广播一次
 	uids, err := s.members(ctx, convID)
 	if err != nil {
 		return msgID, seq, err
 	}
-	for _, uid := range uids {
-		s.Hub.SendToUser(uid, frame)
-	}
+	s.Hub.SendToUsers(uids, frame)
 	return msgID, seq, nil
 }
 
@@ -204,9 +278,69 @@ func (s *Service) Pull(ctx context.Context, uid, convID string, afterSeq uint64,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	msgs, err := scanMsgs(rows, convID)
+	if err != nil {
+		return nil, err
+	}
 
 	resp := &pb.MsgPullResp{ConversationId: convID}
+	hasMore := false
+	if len(msgs) > int(limit) {
+		hasMore = true
+		msgs = msgs[:limit]
+	}
+	resp.Msgs = msgs
+	resp.HasMore = hasMore
+	maxSeq, err := s.MaxSeq(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	resp.MaxSeq = maxSeq
+	return resp, nil
+}
+
+// PullBefore 向上翻历史：返回 < beforeSeq 的消息（升序输出）。
+// beforeSeq 为 0 时从最新一条往回取。返回的 hasMore 表示更早还有消息。
+func (s *Service) PullBefore(ctx context.Context, uid, convID string, beforeSeq uint64, limit uint32) ([]*pb.MsgNotify, bool, error) {
+	if err := s.assertMember(ctx, uid, convID); err != nil {
+		return nil, false, err
+	}
+	if limit == 0 || limit > pullLimit {
+		limit = pullLimit
+	}
+	if beforeSeq == 0 { // 从最新往回翻
+		maxSeq, err := s.MaxSeq(ctx, convID)
+		if err != nil {
+			return nil, false, err
+		}
+		beforeSeq = maxSeq + 1
+	}
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT server_msg_id, seq, from_uid, msg_type, text, attachment, mention_uids, sent_at
+		 FROM message WHERE conversation_id=? AND seq<? ORDER BY seq DESC LIMIT ?`,
+		convID, beforeSeq, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	msgs, err := scanMsgs(rows, convID)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := false
+	if len(msgs) > int(limit) {
+		hasMore = true
+		msgs = msgs[:limit]
+	}
+	// 降序取回，输出时转升序，保持与 Pull 一致
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+	return msgs, hasMore, nil
+}
+
+// scanMsgs 读取 message 查询结果；调用方负责关闭 rows
+func scanMsgs(rows *sql.Rows, convID string) ([]*pb.MsgNotify, error) {
+	defer rows.Close()
 	var msgs []*pb.MsgNotify
 	for rows.Next() {
 		var msgID, fromUID, text, att, mention string
@@ -232,22 +366,7 @@ func (s *Service) Pull(ctx context.Context, uid, convID string, afterSeq uint64,
 		}
 		msgs = append(msgs, n)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	hasMore := false
-	if len(msgs) > int(limit) {
-		hasMore = true
-		msgs = msgs[:limit]
-	}
-	resp.Msgs = msgs
-	resp.HasMore = hasMore
-	maxSeq, err := s.MaxSeq(ctx, convID)
-	if err != nil {
-		return nil, err
-	}
-	resp.MaxSeq = maxSeq
-	return resp, nil
+	return msgs, rows.Err()
 }
 
 // MarkRead 已读上报：更新 read_seq 并同步给会话其他在线成员
@@ -270,6 +389,61 @@ func (s *Service) BuildContactEvent(typ, reqID, fromUID, yid, nickname, message 
 	return &pb.Frame{Body: &pb.Frame_ContactEvent{ContactEvent: &pb.ContactEvent{
 		Type: typ, RequestId: reqID, FromUid: fromUID, Yid: yid, Nickname: nickname, Message: message,
 	}}}
+}
+
+// 落库阶段标识，用于区分撞的是哪张表的唯一键
+const (
+	stageMessage = iota
+	stageClientMap
+)
+
+// insertMessage 在一个事务里写入 message 与幂等映射，返回失败所在的阶段
+func (s *Service) insertMessage(ctx context.Context, fromUID string, m *pb.MsgSend,
+	msgID string, seq uint64, sentAt int64, attJSON, mentionJSON string) (int, error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return stageMessage, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx,
+		`INSERT INTO message(server_msg_id, conversation_id, seq, from_uid, msg_type, text, attachment, mention_uids, sent_at)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		msgID, m.ConversationId, seq, fromUID, int(m.MsgType), m.Text, attJSON, mentionJSON, sentAt); err != nil {
+		return stageMessage, err
+	}
+	if m.ClientMsgId != "" {
+		if _, err = tx.ExecContext(ctx,
+			`INSERT INTO message_client_map(client_msg_id, from_uid, server_msg_id, seq) VALUES(?,?,?,?)`,
+			m.ClientMsgId, fromUID, msgID, seq); err != nil {
+			return stageClientMap, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return stageMessage, err
+	}
+	return stageMessage, nil
+}
+
+// lookupClientMsg 幂等键已存在时回读其结果
+func (s *Service) lookupClientMsg(ctx context.Context, fromUID, clientMsgID string) (string, uint64, bool) {
+	if clientMsgID == "" {
+		return "", 0, false
+	}
+	var msgID string
+	var seq int64
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT server_msg_id, seq FROM message_client_map WHERE client_msg_id=? AND from_uid=?`,
+		clientMsgID, fromUID).Scan(&msgID, &seq)
+	if err != nil {
+		return "", 0, false
+	}
+	return msgID, uint64(seq), true
+}
+
+// isDupKey 判断是否为唯一键冲突（MySQL 1062）
+func isDupKey(err error) bool {
+	var me *mysql.MySQLError
+	return errors.As(err, &me) && me.Number == 1062
 }
 
 func (s *Service) assertMember(ctx context.Context, uid, convID string) error {

@@ -12,6 +12,12 @@ data class Conversation(
     val readSeq: Long = 0,
 )
 
+// 单个会话常驻内存的消息条数上限（超出丢最旧的已确认消息，DB 里仍全量保留）
+private const val MAX_IN_MEMORY_MESSAGES = 500
+
+// conversation_cache 里的保留行 id：记录缓存归属账号（不改表结构，换账号时按它判断是否清库）
+private const val OWNER_ROW = "__cache_owner__"
+
 /** 内存缓存层 + SQLite 持久化（Web 平台 db=null，降级为纯内存） */
 class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
     private val _conversations = MutableStateFlow<List<Conversation>>(emptyList())
@@ -26,6 +32,10 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
     private val myUidFlow = MutableStateFlow("")
     val myUid: StateFlow<String> = myUidFlow
 
+    /** 本地缓存归属的账号 uid（来自保留行，跨启动有效；空串表示未知） */
+    var cacheOwnerUid: String = ""
+        private set
+
     fun setMyUid(uid: String) { myUidFlow.value = uid }
 
     init {
@@ -33,6 +43,8 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
         val database = db
         if (database != null) {
             database.imQueries.loadAllConversations().executeAsList().forEach { c ->
+                // 保留行不是会话，只用来识别缓存归属账号
+                if (c.id == OWNER_ROW) { cacheOwnerUid = c.title; return@forEach }
                 _conversations.value = _conversations.value + Conversation(c.id, c.type, c.title, c.last_seq, c.read_seq)
                 _maxSeqs.value = _maxSeqs.value + (c.id to c.last_seq)
                 val recent = database.imQueries.loadRecent(c.id, 50).executeAsList()
@@ -56,12 +68,20 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
         }
     }
 
-    /** 清空本地缓存（换账号登录时） */
+    /** 清空本地缓存（换账号登录时）：message_cache + conversation_cache 与内存一并清掉（Web 端 db=null 只清内存） */
     fun clearCaches() {
-        db?.imQueries?.clearConversation("")
+        db?.imQueries?.clearAllMessages()
+        db?.imQueries?.clearAllConversations()
         _conversations.value = emptyList()
         _messages.value = emptyMap()
         _maxSeqs.value = emptyMap()
+        cacheOwnerUid = ""
+    }
+
+    /** 记录缓存归属账号；换账号时先 clearCaches 再调用（保留行随 conversation_cache 一起写入） */
+    fun setCacheOwner(uid: String) {
+        cacheOwnerUid = uid
+        db?.imQueries?.upsertConversation(OWNER_ROW, "meta", uid, 0, 0)
     }
 
     fun setConversations(list: List<Conversation>) {
@@ -85,24 +105,49 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
         )
         val cid = msg.conversationId
         val current = _messages.value[cid] ?: emptyList()
-        // 按 server_msg_id 去重后追加，按 seq 排序
-        val next = current
-            .filter { it.serverMsgId != msg.serverMsgId || it.sending }
-            .plus(msg)
-            .sortedWith(compareBy({ it.seq }, { it.sentAt }))
-        _messages.value = _messages.value + (cid to next)
+        // 同一逻辑消息原位更新，否则按 seq 插入有序位置（不再整表 filter+sort）
+        val idx = if (msg.serverMsgId.isNotEmpty()) {
+            current.indexOfFirst { it.serverMsgId == msg.serverMsgId && !it.sending }
+        } else {
+            current.indexOfFirst { it.clientMsgId != null && it.clientMsgId == msg.clientMsgId }
+        }
+        val next = if (idx >= 0) {
+            current.toMutableList().also { it[idx] = msg }
+        } else {
+            insertSorted(current, msg)
+        }
+        _messages.value = _messages.value + (cid to trimMessages(next))
         // 更新会话 lastSeq
         updateConversation(cid) { it.copy(lastSeq = maxOf(it.lastSeq, msg.seq)) }
         bumpMaxSeq(cid, msg.seq)
     }
 
-    /** 发送成功确认：把 pending 消息标记为已确认 */
+    /**
+     * 发送成功确认：保留消息条目，只把 pending 置 0、回填 serverMsgId/seq。
+     * 不能直接删除：notify 回显可能不带或晚到，删了消息就从 UI 上"闪没"。
+     */
     fun confirmMessage(clientMsgId: String, serverMsgId: String, seq: Long, conversationId: String) {
-        db?.imQueries?.markConfirmed(clientMsgId)
+        db?.imQueries?.let { queries ->
+            val pending = queries.loadPending(clientMsgId).executeAsList().firstOrNull()
+            if (pending != null && serverMsgId.isNotEmpty()) {
+                // pending 行（主键 p_xxx）回填为服务端行；同 server_msg_id 的回显行先到也一并覆盖，不留脏行
+                queries.deletePending(clientMsgId)
+                queries.upsertMessage(
+                    serverMsgId, conversationId, seq, pending.from_uid, pending.msg_type,
+                    pending.text, pending.attachment, pending.sent_at, clientMsgId, 0L,
+                )
+            } else {
+                queries.markConfirmed(clientMsgId)
+            }
+        }
         val cid = conversationId
         val current = _messages.value[cid] ?: emptyList()
-        val next = current.filter { it.clientMsgId != clientMsgId || !it.sending }
-        _messages.value = _messages.value + (cid to next)
+        val idx = current.indexOfFirst { it.clientMsgId == clientMsgId && it.sending }
+        if (idx < 0) return
+        val confirmed = current[idx].copy(serverMsgId = serverMsgId, seq = seq, sending = false)
+        // 回显行先到时会多出同 serverMsgId 的行，这里合并成一条并放回 seq 有序位置（ACK 没带 serverMsgId 就不去重）
+        val rest = current.filterIndexed { i, m -> i != idx && (serverMsgId.isEmpty() || m.serverMsgId != serverMsgId) }
+        _messages.value = _messages.value + (cid to insertSorted(rest, confirmed))
     }
 
     fun removePending(clientMsgId: String, conversationId: String) {
@@ -129,6 +174,25 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
     private fun updateConversation(cid: String, transform: (Conversation) -> Conversation) {
         _conversations.value = _conversations.value.map {
             if (it.id == cid) transform(it) else it
+        }
+    }
+
+    /** 按 (seq, sentAt) 升序插入到正确位置，保持有序且不整表排序 */
+    private fun insertSorted(list: List<Msg>, msg: Msg): List<Msg> {
+        val pos = list.indexOfFirst { it.seq > msg.seq || (it.seq == msg.seq && it.sentAt > msg.sentAt) }
+        return if (pos < 0) list + msg else list.subList(0, pos) + msg + list.subList(pos, list.size)
+    }
+
+    /** 单会话常驻内存上限：超出从最旧的已确认消息开始丢，发送中的保留 */
+    private fun trimMessages(list: List<Msg>): List<Msg> {
+        if (list.size <= MAX_IN_MEMORY_MESSAGES) return list
+        var drop = list.size - MAX_IN_MEMORY_MESSAGES
+        return list.filter { m ->
+            when {
+                m.sending -> true
+                drop > 0 -> { drop--; false }
+                else -> true
+            }
         }
     }
 }

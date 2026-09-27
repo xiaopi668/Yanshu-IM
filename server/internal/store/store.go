@@ -7,12 +7,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Store 封装 MySQL + Redis 访问
-type Store struct {
-	DB    *sql.DB
-	RDB   *redis.Client
-}
-
+// NewMySQL 建立 MySQL 连接池
 func NewMySQL(dsn string) (*sql.DB, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {

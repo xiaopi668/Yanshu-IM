@@ -1,14 +1,27 @@
-# IM 全套私有化部署：MySQL + Redis + MinIO + LiveKit SFU + coturn + logic + gateway
+# IM 全套私有化部署：MySQL + Redis + MinIO + LiveKit SFU(内嵌 TURN) + logic + gateway + admin
+#
+# 需放行的端口：10001(WS) 10002(API) 10003(管理后台) 7880/7881(信令) 50000-50200/UDP(WebRTC)
+#               3478/UDP + 49160-49200/UDP(LiveKit 内嵌 TURN) 9000/9001(MinIO)
 #
 # 用法：
-#   cd server && docker build -t im-server:latest deploy/..
+#   cd server && docker build -t im-server:latest -f deploy/Dockerfile .
 #   cd .. && docker compose -f deploy/docker-compose.yml up -d
 #
 # 服务端点：
 #   HTTP API   http://<host>:10002     (注册/登录/好友/群组/历史/上传)
 #   WebSocket  ws://<host>:10001/ws    (实时消息 + 通话信令)
+#   管理后台   http://<host>:10003/admin
 #   MinIO      http://<host>:9000      (对象存储)
 #   LiveKit    ws://<host>:7880        (音视频媒体面)
+#
+# 生产部署务必覆盖：
+#   IM_JWT_SECRET / IM_ADMIN_TOKEN / IM_LIVEKIT_API_SECRET / MySQL 与 MinIO 密码
+#   另建议设置 IM_ENV=production 使服务拒绝使用内置默认密钥，以及
+#   IM_PUBLIC_BASE_URL（站点对外地址，OIDC 回跳校验依据）、IM_ALLOWED_ORIGINS（跨源白名单）、
+#   IM_TRUST_PROXY=true（仅当本 compose 前面还有一层反代时）、IM_AUTH_RATE_LIMIT（登录限流）
+#
+# 注意：coturn（deploy/turn）与 LiveKit 内嵌 TURN 争抢 3478/UDP，二选一；
+#       compose 默认用 LiveKit 内嵌的，独立 coturn 服务已注释掉。
 
 services:
   mysql:
@@ -51,12 +64,19 @@ services:
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
 
-  coturn:
-    restart: unless-stopped
-    image: coturn/coturn:latest
-    network_mode: host
-    volumes:
-      - ./turn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+  # coturn 已改为使用 LiveKit 内嵌 TURN（见 livekit.yaml 的 turn 段）：
+  # 内嵌实现与 LiveKit 凭证体系打通、客户端自动拿到 ICE server，且无需维护独立容器。
+  # 两者都监听 3478/UDP，**不可同时启用**。若坚持用外部 coturn，请：
+  #   1) 注释掉 livekit.yaml 里的整段 turn；
+  #   2) 取消下面 coturn 的注释，并把 turnserver.conf 的 external-ip 改成你的公网 IP；
+  #   3) 在 livekit.yaml 的 rtc 段补 turn_servers 指向该 coturn（username/credential 用 imuser/impass）。
+  #
+  # coturn:
+  #   restart: unless-stopped
+  #   image: coturn/coturn:latest
+  #   network_mode: host
+  #   volumes:
+  #     - ./turn/turnserver.conf:/etc/coturn/turnserver.conf:ro
 
   logic:
     restart: unless-stopped
@@ -89,6 +109,7 @@ services:
     restart: unless-stopped
     image: im-server:latest
     environment:
+      IM_ROLE: admin
       IM_MYSQL_HOST: mysql
       IM_MYSQL_PASSWORD: root123
       IM_REDIS_ADDR: redis:6379

@@ -1,12 +1,11 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	"im/internal/config"
 )
 
 func fail(w http.ResponseWriter, status int, err error) {
@@ -19,11 +18,20 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func cors(next http.Handler) http.Handler {
+// cors 管理后台页面与 API 同源，正常情况下用不到跨源；
+// 配置了 IM_ALLOWED_ORIGINS 时才放行白名单来源，未配置时不下发任何 CORS 头。
+func cors(cfg *config.Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if origin := r.Header.Get("Origin"); origin != "" && len(cfg.AllowedOrigins) > 0 {
+			if !cfg.OriginAllowed(origin) {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Add("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -38,9 +46,4 @@ func dayStart(day string) int64 {
 		return 0
 	}
 	return t.UnixMilli()
-}
-
-// reportOnline gateway 周期上报在线数到 Redis（供 admin 统计）
-func reportOnline(ctx context.Context, rdb *redis.Client, count int64) {
-	_ = rdb.Set(ctx, "im:online", count, 2*time.Minute).Err()
 }

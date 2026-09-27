@@ -18,7 +18,7 @@ const ringTimeout = 60 * time.Second
 
 // Manager 通话状态机（单机版；多实例时可挪 Redis）
 type Manager struct {
-	mu    sync.Mutex
+	mu sync.Mutex
 	// callID -> 进行中的通话
 	calls map[string]*Session
 	// 被叫UID -> 待接听 invite
@@ -40,6 +40,7 @@ type Session struct {
 	CallID   string
 	RoomName string
 	A, B     string
+	Created  time.Time
 }
 
 func NewManager(apiKey, apiSecret string) *Manager {
@@ -85,7 +86,7 @@ func (m *Manager) Accept(callID, byUID string) (tokenA, tokenB string, ok bool) 
 		return "", "", false
 	}
 	delete(m.pending, byUID)
-	s := &Session{CallID: callID, RoomName: inv.RoomName, A: inv.FromUID, B: byUID}
+	s := &Session{CallID: callID, RoomName: inv.RoomName, A: inv.FromUID, B: byUID, Created: time.Now()}
 	m.calls[callID] = s
 	tokenA = m.issue(inv.FromUID, inv.RoomName)
 	tokenB = m.issue(byUID, inv.RoomName)
@@ -114,18 +115,39 @@ func (m *Manager) Session(callID string) *Session {
 	return m.calls[callID]
 }
 
-// PollExpired 清理超时未接听的邀请，返回被取消的 callID（供 gateway 推 CALL_TIMEOUT）
-func (m *Manager) PollExpired() []string {
+// PollExpired 清理超时未接听的邀请，返回被取消的邀请（供 gateway 推 CALL_TIMEOUT）
+func (m *Manager) PollExpired() []*Invite {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var cancelled []string
+	var cancelled []*Invite
 	for uid, inv := range m.pending {
 		if time.Since(inv.Created) > ringTimeout {
 			delete(m.pending, uid)
-			cancelled = append(cancelled, inv.CallID)
+			cancelled = append(cancelled, inv)
 		}
 	}
 	return cancelled
+}
+
+// PollStaleSessions 清理长时间未挂断的僵尸会话（如双方都掉线），返回被清理的会话
+func (m *Manager) PollStaleSessions(maxAge time.Duration) []*Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var stale []*Session
+	for id, s := range m.calls {
+		if time.Since(s.Created) > maxAge {
+			delete(m.calls, id)
+			stale = append(stale, s)
+		}
+	}
+	return stale
+}
+
+// End 挂断：释放会话，避免 calls 表常驻内存
+func (m *Manager) End(callID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.calls, callID)
 }
 
 // issue 签发 LiveKit room join token

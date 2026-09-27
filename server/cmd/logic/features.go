@@ -16,6 +16,7 @@ import (
 
 	"im/internal/archive"
 	"im/internal/pb"
+	"im/internal/store"
 )
 
 // ---------- 好友（一期直加接口，二期通讯录走 /contacts） ----------
@@ -267,36 +268,6 @@ func (a *apiv1) listMembers(w http.ResponseWriter, r *http.Request, uid string) 
 	writeJSON(w, 200, out)
 }
 
-func (a *apiv1) addMembers(w http.ResponseWriter, r *http.Request, uid string) {
-	convID := r.PathValue("id")
-	var req struct {
-		Members []string `json:"members"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		fail(w, 400, err)
-		return
-	}
-	ok, err := a.db.IsMember(convID, uid)
-	if err != nil {
-		fail(w, 500, err)
-		return
-	}
-	if !ok {
-		fail(w, 403, errors.New("not a member"))
-		return
-	}
-	now := time.Now().UnixMilli()
-	for _, m := range req.Members {
-		if _, err := a.db.Exec(
-			`INSERT IGNORE INTO conversation_member(conversation_id, uid, role, joined_at) VALUES(?,?,?,?)`,
-			convID, m, "member", now); err != nil {
-			fail(w, 500, err)
-			return
-		}
-	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
-}
-
 func (a *apiv1) history(w http.ResponseWriter, r *http.Request, uid string) {
 	convID := r.PathValue("id")
 	ok, err := a.db.IsMember(convID, uid)
@@ -308,8 +279,30 @@ func (a *apiv1) history(w http.ResponseWriter, r *http.Request, uid string) {
 		fail(w, 403, errors.New("not a member"))
 		return
 	}
-	before, _ := strconv.ParseUint(r.URL.Query().Get("before_seq"), 10, 64)
-	resp, err := a.msg.Pull(r.Context(), uid, convID, before, 50)
+	// before_seq 向上翻历史（返回 seq < before_seq，升序输出）；缺省从最新往回取。
+	// after_seq 向后增量拉取（返回 seq > after_seq），与 WebSocket 的 MsgPullReq 语义一致。
+	q := r.URL.Query()
+	before, _ := strconv.ParseUint(q.Get("before_seq"), 10, 64)
+	after, _ := strconv.ParseUint(q.Get("after_seq"), 10, 64)
+
+	var msgs []*pb.MsgNotify
+	var hasMore bool
+	if after > 0 {
+		resp, err := a.msg.Pull(r.Context(), uid, convID, after, 50)
+		if err != nil {
+			fail(w, 500, err)
+			return
+		}
+		msgs, hasMore = resp.Msgs, resp.HasMore
+	} else {
+		var err error
+		msgs, hasMore, err = a.msg.PullBefore(r.Context(), uid, convID, before, 50)
+		if err != nil {
+			fail(w, 500, err)
+			return
+		}
+	}
+	maxSeq, err := a.msg.MaxSeq(r.Context(), convID)
 	if err != nil {
 		fail(w, 500, err)
 		return
@@ -324,14 +317,14 @@ func (a *apiv1) history(w http.ResponseWriter, r *http.Request, uid string) {
 		SentAt      int64           `json:"sent_at"`
 	}
 	out := []histMsg{}
-	for _, m := range resp.Msgs {
+	for _, m := range msgs {
 		att, _ := json.Marshal(m.Attachment)
 		out = append(out, histMsg{
 			ServerMsgID: m.ServerMsgId, Seq: m.Seq, FromUID: m.FromUid,
 			MsgType: int(m.MsgType), Text: m.Text, Attachment: att, SentAt: m.SentAt,
 		})
 	}
-	writeJSON(w, 200, map[string]any{"msgs": out, "has_more": resp.HasMore, "max_seq": resp.MaxSeq})
+	writeJSON(w, 200, map[string]any{"msgs": out, "has_more": hasMore, "max_seq": maxSeq})
 }
 
 // ---------- 对象存储 ----------
@@ -798,7 +791,7 @@ func (a *apiv1) searchMessages(w http.ResponseWriter, r *http.Request, uid strin
 		FROM message m
 		JOIN conversation_member cm ON cm.conversation_id=m.conversation_id AND cm.uid=?
 		WHERE m.text LIKE ? AND m.msg_type=0
-		ORDER BY m.sent_at DESC LIMIT 50`, uid, "%"+q+"%")
+		ORDER BY m.sent_at DESC LIMIT 50`, uid, store.LikeQuery(q))
 	if err != nil {
 		fail(w, 500, err)
 		return
@@ -982,9 +975,8 @@ func (a *apiv1) addMembersEnhanced(w http.ResponseWriter, r *http.Request, uid s
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-// sendGroupSystemMsg 往群会话发一条系统消息（走标准 seq/落库/投递）
-func rContext() context.Context { return context.Background() }
-
+// sendGroupSystemMsg 往群会话发一条系统消息（走标准 seq/落库/投递）。
+// 调用方可能已返回，因此用独立的超时 context，不能挂在请求 context 上。
 func (a *apiv1) sendGroupSystemMsg(convID, fromUID string, payload map[string]any) {
 	b, _ := json.Marshal(payload)
 	send := &pb.MsgSend{
@@ -993,9 +985,10 @@ func (a *apiv1) sendGroupSystemMsg(convID, fromUID string, payload map[string]an
 		MsgType:        pb.MsgType_MSG_SYSTEM,
 		Text:           string(b),
 	}
-	_, _, _ = a.msg.Send(rContext(), fromUID, send)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _, _ = a.msg.Send(ctx, fromUID, send)
 }
-
 
 // ---------- 三期：头像 ----------
 

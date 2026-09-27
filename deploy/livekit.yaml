@@ -4,7 +4,22 @@ rtc:
   tcp_port: 7881
   port_range_start: 50000
   port_range_end: 50200
+  # false = 直接通告本机 IP，适用于公网 IP 绑定在网卡上的机器（VPS/物理机）。
+  # 若机器在 NAT 后（云主机内网 IP），改为 true 让 LiveKit 用 STUN 自动探测公网 IP，
+  # 或保持 false 并显式指定 node_ip: <公网IP>
   use_external_ip: false
+  # node_ip: 203.0.113.10
+
+# 内嵌 TURN：LiveKit 自带 TURN 实现，凭证与 LiveKit 鉴权体系打通，
+# 客户端通过 LiveKit join 响应自动拿到这些 ICE server，无需在客户端硬编码。
+# 需放行的端口：3478/UDP（TURN）+ 49160-49200/UDP（TURN 中继）
+# 如需 TURN/TLS，追加 tls_port 并配置 LIVEKIT_TURN_CERT / LIVEKIT_TURN_KEY 或 cert_file/key_file。
+turn:
+  enabled: true
+  udp_port: 3478
+  relay_range_start: 49160
+  relay_range_end: 49200
+
 keys:
   devkey: devsecret-devsecret-devsecret-devsecre
 logging:

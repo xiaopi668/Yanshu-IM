@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -17,11 +18,9 @@ import (
 
 	"im/internal/archive"
 	"im/internal/auth"
-	"im/internal/siteconf"
 	"im/internal/config"
-	"im/internal/hub"
-	"im/internal/messaging"
 	"im/internal/migrate"
+	"im/internal/siteconf"
 	"im/internal/storage"
 	"im/internal/store"
 )
@@ -32,26 +31,26 @@ var adminHTML []byte
 type admin struct {
 	cfg   *config.Config
 	db    *store.DB
-	msg   *messaging.Service
 	minio *storage.ObjectStore
 	rdb   *redis.Client
 }
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.CheckSecrets(); err != nil {
+		log.Fatalf("[admin] %v", err)
+	}
 	sqldb, err := store.NewMySQL(cfg.MySQLDSN)
 	if err != nil {
 		log.Fatalf("mysql: %v", err)
 	}
 	migrate.Run(sqldb)
 	rdb := store.NewRedis(cfg.RedisAddr, cfg.RedisPass)
-	h := hub.New()
-	msgSvc := messaging.New(sqldb, rdb, h, 3)
 	minioSvc, err := storage.NewObjectStore(cfg)
 	if err != nil {
 		log.Printf("[admin] object storage unavailable: %v", err)
 	}
-	a := &admin{cfg: cfg, db: store.Wrap(sqldb), msg: msgSvc, minio: minioSvc, rdb: rdb}
+	a := &admin{cfg: cfg, db: store.Wrap(sqldb), minio: minioSvc, rdb: rdb}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +70,7 @@ func main() {
 	a.admined(mux, "PUT /admin/site-config", a.putSiteConfig)
 
 	log.Printf("[admin] listening on %s", cfg.AdminAddr)
-	log.Fatal(http.ListenAndServe(cfg.AdminAddr, cors(mux)))
+	log.Fatal(http.ListenAndServe(cfg.AdminAddr, cors(cfg, mux)))
 }
 
 func (a *admin) login(w http.ResponseWriter, r *http.Request) {
@@ -82,17 +81,22 @@ func (a *admin) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	if req.Token != a.cfg.AdminToken {
+	if !a.tokenOK(req.Token) {
 		fail(w, 401, errors.New("invalid token"))
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
+// tokenOK 恒定时间比较，避免逐字节短路带来的时序侧信道
+func (a *admin) tokenOK(got string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(a.cfg.AdminToken)) == 1
+}
+
 func (a *admin) admined(mux *http.ServeMux, pattern string, h http.HandlerFunc) {
 	mux.Handle(pattern, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if tok != a.cfg.AdminToken {
+		if !a.tokenOK(tok) {
 			fail(w, 401, errors.New("unauthorized"))
 			return
 		}
@@ -109,7 +113,7 @@ func (a *admin) listUsers(w http.ResponseWriter, r *http.Request) {
 			SELECT u.uid, u.username, u.nickname, COALESCE(u.yid,''), u.created_at, COALESCE(s.disabled,0)
 			FROM user u LEFT JOIN user_state s ON s.uid=u.uid
 			WHERE u.uid=? OR u.username LIKE ? OR u.nickname LIKE ? OR u.yid LIKE ? LIMIT 100`,
-			q, "%"+q+"%", "%"+q+"%", "%"+q+"%")
+			q, store.LikeQuery(q), store.LikeQuery(q), store.LikeQuery(q))
 	} else {
 		rows, err = a.db.Query(`
 			SELECT u.uid, u.username, u.nickname, COALESCE(u.yid,''), u.created_at, COALESCE(s.disabled,0)
@@ -223,11 +227,11 @@ func (a *admin) archives(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type ar struct {
-		Day      string `json:"day"`
-		ConvID   string `json:"conversation_id"`
-		Count    int64  `json:"count"`
+		Day       string `json:"day"`
+		ConvID    string `json:"conversation_id"`
+		Count     int64  `json:"count"`
 		ObjectKey string `json:"object_key"`
-		Created  int64  `json:"created_at"`
+		Created   int64  `json:"created_at"`
 	}
 	out := []ar{}
 	for rows.Next() {
@@ -270,7 +274,6 @@ func (a *admin) listConversations(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, out)
 }
-
 
 // ---------- 站点配置 ----------
 

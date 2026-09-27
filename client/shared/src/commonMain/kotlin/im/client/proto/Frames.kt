@@ -5,7 +5,8 @@ package im.client.proto
 enum class MsgType(val v: Int) {
     Text(0), Image(1), File(2), Audio(3), Video(4), Call(5), System(6);
     companion object {
-        fun from(v: Int) = entries.first { it.v == v }
+        // 服务端新增枚举值时兜底成 Text：下行解码不抛异常（不改已有字段号/枚举值）
+        fun from(v: Int) = entries.firstOrNull { it.v == v } ?: Text
     }
 }
 
@@ -43,6 +44,7 @@ data class PullRespData(val conversationId: String, val msgs: List<Msg>, val has
 enum class CallEventType(val v: Int) {
     Invite(0), Accept(1), Reject(2), Cancel(3), Hangup(4), Timeout(5), Busy(6);
     companion object {
+        // 服务端新增事件时兜底成 Busy（静默降级，只影响展示，不崩解码）
         fun from(v: Int) = entries.firstOrNull { it.v == v } ?: Busy
     }
 }
@@ -110,16 +112,21 @@ object Frames {
 
     // ---------- decode ----------
 
-    fun decodeFrame(bytes: ByteArray): FrameKind {
-        val f = ProtoReader(bytes).readAll()
-        if (f.containsKey(1)) return FrameKind.Heartbeat
-        f[3]?.firstOrNull()?.bytes?.let { return FrameKind.AuthResp(decodeAuthResp(it)) }
-        f[5]?.firstOrNull()?.bytes?.let { return FrameKind.MsgAck(decodeMsgAck(it)) }
-        f[6]?.firstOrNull()?.bytes?.let { return FrameKind.MsgNotify(decodeMsg(it)) }
-        f[8]?.firstOrNull()?.bytes?.let { return FrameKind.MsgPullResp(decodePullResp(it)) }
-        f[11]?.firstOrNull()?.bytes?.let { return FrameKind.ContactEventFrame(decodeContactEvent(it)) }
-        f[10]?.firstOrNull()?.bytes?.let { return FrameKind.CallSignalFrame(decodeCallSignal(it)) }
-        return FrameKind.Unknown
+    /** 解码失败（脏帧 / 字段越界）返回 null，调用方直接丢弃该帧，不影响连接 */
+    fun decodeFrame(bytes: ByteArray): FrameKind? {
+        try {
+            val f = ProtoReader(bytes).readAll()
+            if (f.containsKey(1)) return FrameKind.Heartbeat
+            f[3]?.firstOrNull()?.bytes?.let { return FrameKind.AuthResp(decodeAuthResp(it)) }
+            f[5]?.firstOrNull()?.bytes?.let { return FrameKind.MsgAck(decodeMsgAck(it)) }
+            f[6]?.firstOrNull()?.bytes?.let { return FrameKind.MsgNotify(decodeMsg(it)) }
+            f[8]?.firstOrNull()?.bytes?.let { return FrameKind.MsgPullResp(decodePullResp(it)) }
+            f[11]?.firstOrNull()?.bytes?.let { return FrameKind.ContactEventFrame(decodeContactEvent(it)) }
+            f[10]?.firstOrNull()?.bytes?.let { return FrameKind.CallSignalFrame(decodeCallSignal(it)) }
+            return FrameKind.Unknown
+        } catch (e: ProtoDecodeException) {
+            return null
+        }
     }
 
     fun decodeMsg(bytes: ByteArray): Msg {

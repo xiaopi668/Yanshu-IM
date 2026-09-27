@@ -3,7 +3,9 @@ package siteconf
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +41,9 @@ type OIDCProvider struct {
 	Issuer       string `json:"issuer"` // 如 https://accounts.google.com
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
+	// RedirectURIs 允许的回跳地址白名单（可选）。
+	// 未配置时只接受本站固定的 /v1/oidc/{name}/callback，防止开放重定向盗取 JWT。
+	RedirectURIs []string `json:"redirect_uris,omitempty"`
 }
 
 // ---------- 存取 ----------
@@ -160,7 +165,12 @@ func SendEmailCode(rdb *redis.Client, c Conf, email string) error {
 	if err == nil && !ok {
 		return errors.New("发送太频繁，请稍后再试")
 	}
-	code := fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
+	// 验证码必须用密码学随机数，时间戳可被预测
+	var rnd [4]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return err
+	}
+	code := fmt.Sprintf("%06d", binary.BigEndian.Uint32(rnd[:])%1000000)
 	if err := rdb.Set(ctx, "im:ecode:"+email, code, emailCodeTTL).Err(); err != nil {
 		return err
 	}
@@ -204,9 +214,12 @@ func sendMail(c Conf, to, subject, body string) error {
 		"",
 		body,
 	}, "\r\n")
-	var client MailClient = &realMail{}
+	var client MailClient = mailClient
 	return client.Send(addr, smtpAuth(c.SMTPUser, c.SMTPPass, c.SMTPHost), from, []string{to}, []byte(msg))
 }
+
+// mailClient 可被测试替换
+var mailClient MailClient = &realMail{}
 
 type MailClient interface {
 	Send(addr string, auth smtp.Auth, from string, to []string, msg []byte) error

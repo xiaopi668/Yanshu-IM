@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -35,12 +37,14 @@ func (a *apiv1) publicSiteConfig(w http.ResponseWriter, r *http.Request) {
 		AuthorizeURL string `json:"authorize_url"`
 	}
 	oidcList := []pubOIDC{}
-	base := publicBaseURL(r)
+	base := a.baseURL(r)
 	for _, p := range c.OIDCProviders {
 		oidcList = append(oidcList, pubOIDC{
-			Name:         p.Name,
+			Name: p.Name,
+			// redirect_uri 固定指向本服务的 OIDC 回调（而非前端路由），
+			// 由服务端完成 code 换 token 后再带回跳地址
 			AuthorizeURL: fmt.Sprintf("%s/v1/oidc/%s/authorize?redirect_uri=%s",
-				base, urlEscape(p.Name), urlEscape(base+"/oidc-callback/"+p.Name)),
+				base, urlEscape(p.Name), urlEscape(oidcCallbackURI(base, p.Name))),
 		})
 	}
 	writeJSON(w, 200, map[string]any{
@@ -52,8 +56,18 @@ func (a *apiv1) publicSiteConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func publicBaseURL(r *http.Request) string {
-	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
+// oidcCallbackURI 本站固定的 OIDC 回调地址
+func oidcCallbackURI(base, name string) string {
+	return base + "/v1/oidc/" + name + "/callback"
+}
+
+// baseURL 站点对外地址。优先取 IM_PUBLIC_BASE_URL（权威值，不信任任何请求头）；
+// 否则由请求推导，且仅在 IM_TRUST_PROXY=true 时才信任 X-Forwarded-Host。
+func (a *apiv1) baseURL(r *http.Request) string {
+	if a.cfg.PublicBaseURL != "" {
+		return strings.TrimRight(a.cfg.PublicBaseURL, "/")
+	}
+	if h := r.Header.Get("X-Forwarded-Host"); h != "" && a.cfg.TrustProxy {
 		scheme := r.Header.Get("X-Forwarded-Proto")
 		if scheme == "" {
 			scheme = "https"
@@ -67,13 +81,45 @@ func publicBaseURL(r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
+// rateLimit 按客户端 IP 的固定窗口限流，用于登录/注册/发验证码等可被暴力尝试或滥用的入口。
+// limit<=0 关闭；Redis 故障时放行（fail-open），不能因为缓存挂了就全员登录失败。
+// loopback（本机/单测/E2E）不计入：攻击者能打到 127.0.0.1 说明已经在主机上，
+// 而 docker compose 里经网桥进来的客户端也不在 loopback，不受影响。
+func (a *apiv1) rateLimit(r *http.Request, bucket string, limit int64, window time.Duration) error {
+	if limit <= 0 {
+		return nil
+	}
+	ip := clientIP(r, a.cfg.TrustProxy)
+	if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
+		return nil
+	}
+	key := "im:rl:" + bucket + ":" + ip
+	n, err := a.rdb.Incr(r.Context(), key).Result()
+	if err != nil {
+		return nil
+	}
+	if n == 1 {
+		_ = a.rdb.Expire(r.Context(), key, window).Err()
+	}
+	if n > limit {
+		return errors.New("操作过于频繁，请稍后再试")
+	}
+	return nil
+}
+
 func urlEscape(s string) string { return strings.ReplaceAll(s, "&", "%26") }
 
-func clientIP(r *http.Request) string {
-	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+// clientIP 取客户端 IP。仅在 IM_TRUST_PROXY=true 时信任 X-Forwarded-For，
+// 否则一律取直连地址，防止伪造该头绕过基于 IP 的限制。
+func clientIP(r *http.Request, trustProxy bool) string {
+	if v := r.Header.Get("X-Forwarded-For"); v != "" && trustProxy {
 		return strings.TrimSpace(strings.Split(v, ",")[0])
 	}
-	return strings.Split(r.RemoteAddr, ":")[0]
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // checkTurnstile 站点开启 Turnstile 时校验 token
@@ -86,6 +132,15 @@ func (a *apiv1) checkTurnstile(c siteconf.Conf, token, ip string) error {
 
 // sendEmailCode 发送邮箱验证码
 func (a *apiv1) sendEmailCode(w http.ResponseWriter, r *http.Request) {
+	// 验证码通道是邮件轰炸的放大器，限流比登录更紧
+	limits := a.cfg.AuthRateLimit / 12
+	if a.cfg.AuthRateLimit > 0 && limits < 1 {
+		limits = 1
+	}
+	if err := a.rateLimit(r, "emailcode", limits, 10*time.Minute); err != nil {
+		fail(w, 429, err)
+		return
+	}
 	c := a.siteConf()
 	if !c.EmailCodeEnabled {
 		fail(w, 403, errors.New("邮箱验证码未启用"))
@@ -99,7 +154,7 @@ func (a *apiv1) sendEmailCode(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	if err := a.checkTurnstile(c, req.TurnstileToken, clientIP(r)); err != nil {
+	if err := a.checkTurnstile(c, req.TurnstileToken, clientIP(r, a.cfg.TrustProxy)); err != nil {
 		fail(w, 403, err)
 		return
 	}
@@ -114,24 +169,78 @@ var _ = pb.MsgType_MSG_SYSTEM
 
 // ---------- OIDC ----------
 
+// oidcProvider 按名称查找已配置的身份提供商
+func oidcProvider(c siteconf.Conf, name string) *siteconf.OIDCProvider {
+	for i := range c.OIDCProviders {
+		if c.OIDCProviders[i].Name == name {
+			return &c.OIDCProviders[i]
+		}
+	}
+	return nil
+}
+
+// checkRedirectURI 校验 OIDC 回跳地址。
+// 只接受「本站固定的回调地址」或服务商显式配置的 RedirectURIs，
+// 防止攻击者构造 redirect_uri=https://evil.com 把签发的 JWT 送到自己域名（开放重定向 → 账号接管）。
+func checkRedirectURI(ours, got string, p *siteconf.OIDCProvider) error {
+	if got == "" {
+		return errors.New("缺少 redirect_uri")
+	}
+	u, err := url.Parse(got)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return errors.New("redirect_uri 需为 http(s) 绝对地址")
+	}
+	if strings.EqualFold(strings.TrimRight(got, "/"), strings.TrimRight(ours, "/")) {
+		return nil
+	}
+	for _, allow := range p.RedirectURIs {
+		if strings.EqualFold(strings.TrimRight(allow, "/"), strings.TrimRight(got, "/")) {
+			return nil
+		}
+	}
+	return errors.New("redirect_uri 不在允许列表内")
+}
+
+// checkReturnTo 校验登录成功后浏览器的最终去向，必须与本站同源
+func checkReturnTo(base, got string) (string, error) {
+	if got == "" {
+		return base + "/", nil
+	}
+	u, err := url.Parse(got)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", errors.New("return_to 需为 http(s) 绝对地址")
+	}
+	b, err := url.Parse(base)
+	if err != nil || !strings.EqualFold(u.Host, b.Host) {
+		return "", errors.New("return_to 必须与本站同源")
+	}
+	u.Fragment = "" // token 走 fragment，避免与已有 fragment 冲突
+	return u.String(), nil
+}
+
 // oidcAuthorize 302 到身份提供商授权页
 func (a *apiv1) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	base := a.baseURL(r)
 	redirectURI := r.URL.Query().Get("redirect_uri")
-	if !strings.HasPrefix(redirectURI, "http://") && !strings.HasPrefix(redirectURI, "https://") {
-		fail(w, 400, errors.New("redirect_uri 需为 http(s)"))
-		return
+	if redirectURI == "" {
+		redirectURI = oidcCallbackURI(base, name)
 	}
+	returnTo := r.URL.Query().Get("return_to")
+
 	c := a.siteConf()
-	var provider *siteconf.OIDCProvider
-	for _, p := range c.OIDCProviders {
-		if p.Name == name {
-			provider = &p
-			break
-		}
-	}
+	provider := oidcProvider(c, name)
 	if provider == nil {
 		fail(w, 404, errors.New("OIDC provider 不存在"))
+		return
+	}
+	if err := checkRedirectURI(oidcCallbackURI(base, name), redirectURI, provider); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	returnURI, err := checkReturnTo(base, returnTo)
+	if err != nil {
+		fail(w, 400, err)
 		return
 	}
 	d, err := siteconf.Discover(provider.Issuer)
@@ -140,9 +249,9 @@ func (a *apiv1) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := randHex(16)
-	// state → 5 分钟内有效，绑定 redirect_uri 与 provider
-	if err := a.rdb.Set(r.Context(), "im:oidc:state:"+state,
-		name+"|"+redirectURI, 5*time.Minute).Err(); err != nil {
+	// state → 5 分钟内有效，绑定 redirect_uri / 回跳地址 / provider
+	binding := strings.Join([]string{name, redirectURI, returnURI}, "|")
+	if err := a.rdb.Set(r.Context(), "im:oidc:state:"+state, binding, 5*time.Minute).Err(); err != nil {
 		fail(w, 500, err)
 		return
 	}
@@ -169,23 +278,32 @@ func (a *apiv1) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.rdb.Del(r.Context(), "im:oidc:state:"+state).Err()
-	parts := strings.SplitN(binding, "|", 2)
-	if len(parts) != 2 {
+	parts := strings.SplitN(binding, "|", 3)
+	if len(parts) < 2 {
 		fail(w, 400, errors.New("state 无效"))
 		return
 	}
 	name, redirectURI := parts[0], parts[1]
-
-	c := a.siteConf()
-	var provider *siteconf.OIDCProvider
-	for _, p := range c.OIDCProviders {
-		if p.Name == name {
-			provider = &p
-			break
-		}
+	returnTo := ""
+	if len(parts) == 3 {
+		returnTo = parts[2]
 	}
+
+	base := a.baseURL(r)
+	c := a.siteConf()
+	provider := oidcProvider(c, name)
 	if provider == nil {
 		fail(w, 404, errors.New("OIDC provider 不存在"))
+		return
+	}
+	// 二次校验：从发起授权到回调期间配置可能已变更，同样不能放宽
+	if err := checkRedirectURI(oidcCallbackURI(base, name), redirectURI, provider); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	returnURI, err := checkReturnTo(base, returnTo)
+	if err != nil {
+		fail(w, 400, err)
 		return
 	}
 	d, err := siteconf.Discover(provider.Issuer)
@@ -233,8 +351,8 @@ func (a *apiv1) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tok, _ := auth.MakeToken(a.cfg.JWTSecret, uid, "oidc")
-	// 回跳客户端页面，token 放 fragment
-	http.Redirect(w, r, redirectURI+"#token="+tok+"&uid="+uid, http.StatusFound)
+	// 回跳到发起登录时的页面，token 放 fragment（同源校验已在 authorize/callback 两处做过）
+	http.Redirect(w, r, returnURI+"#token="+tok+"&uid="+uid, http.StatusFound)
 }
 
 func nullIfEmpty(s string) any {

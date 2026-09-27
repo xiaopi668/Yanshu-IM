@@ -59,17 +59,6 @@ tasks.register<JavaExec>("runDbSmoke") {
     classpath = (comp.runtimeDependencyFiles ?: files()) + files(comp.output.allOutputs)
 }
 
-// 连接层调试入口：gradle -p . :shared:runDebugConn
-afterEvaluate {
-    tasks.register<JavaExec>("runDebugConn") {
-        group = "im-debug"
-        val comp = kotlin.targets.getByName("desktop").compilations.getByName("test")
-        mainClass.set("im.client.DebugConnTestKt")
-        classpath = (comp.runtimeDependencyFiles ?: files()) + files(comp.output.allOutputs)
-        standardInput = System.`in`
-    }
-}
-
 sqldelight {
     databases {
         create("ImDatabase") {
