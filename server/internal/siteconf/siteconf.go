@@ -195,6 +195,36 @@ func CheckEmailCode(rdb *redis.Client, email, code string) error {
 	return nil
 }
 
+// SendTestMail 用当前 SMTP 配置实发一封测试邮件。
+//
+// 给管理后台用：配置完 SMTP 后立刻验证链路是否真的通（凭据对不对、端口对不对、
+// 发件人是否被服务商接受）。刻意不复用验证码逻辑 —— 不写 Redis、不做频率限制、
+// 不生成验证码，纯粹只验证「能不能发出去」。
+func SendTestMail(c Conf, to string) error {
+	to = strings.TrimSpace(to)
+	if _, err := mail.ParseAddress(to); err != nil {
+		return errors.New("收件邮箱格式不正确")
+	}
+	if c.SMTPHost == "" {
+		return errors.New("SMTP 未配置：请先填写服务器地址并保存")
+	}
+	from := c.SMTPFrom
+	if from == "" {
+		from = c.SMTPUser
+	}
+	body := strings.Join([]string{
+		"这是一封来自雁书管理后台的测试邮件。",
+		"",
+		"收到它说明当前 SMTP 配置可用。",
+		"",
+		"服务器：" + fmt.Sprintf("%s:%d", c.SMTPHost, c.SMTPPort),
+		"发件人：" + from,
+		"时间：" + time.Now().Format("2006-01-02 15:04:05"),
+		"",
+	}, "\r\n")
+	return sendMail(c, to, "雁书 SMTP 测试邮件", body)
+}
+
 // sendMail 通过 SMTP 发送（StartTLS/明文，MVP 不做 465 隐式 TLS）
 func sendMail(c Conf, to, subject, body string) error {
 	if c.SMTPHost == "" {

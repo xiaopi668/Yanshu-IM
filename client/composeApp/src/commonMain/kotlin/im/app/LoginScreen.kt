@@ -23,6 +23,7 @@ import im.client.auth.oidcLogin
 import im.client.auth.saveSession
 import im.client.openUrl
 import im.client.registerTurnstileCallback
+import im.client.registerTurnstileErrorCallback
 import im.client.renderTurnstileWidget
 import im.client.wireCallbacks
 import kotlinx.coroutines.delay
@@ -49,6 +50,8 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
     var turnstileToken by remember { mutableStateOf("") }
     // 当前端能否真正渲染 Turnstile：Web 端能，桌面/Android 是桩实现（返回 false）
     var turnstileRenderable by remember { mutableStateOf(false) }
+    // 人机验证的失败原因（脚本被拦、密钥不匹配、超时…）：不显示出来用户只会看到一直转圈
+    var turnstileErr by remember { mutableStateOf<String?>(null) }
     var showConn by remember { mutableStateOf(false) }
     var oidcToken by remember { mutableStateOf("") }
     // 自动回调失败时才提示手工粘贴；成功路径下这个输入框根本用不上
@@ -82,7 +85,11 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
             val cfg = apiSiteConfig(apiBase.trimEnd('/'))
             siteCfg = cfg
             if (cfg.turnstile_enabled && cfg.turnstile_site_key.isNotEmpty()) {
-                registerTurnstileCallback { token -> turnstileToken = token }
+                registerTurnstileCallback { token ->
+                    turnstileToken = token
+                    turnstileErr = null
+                }
+                registerTurnstileErrorCallback { msg -> turnstileErr = msg }
                 turnstileRenderable = renderTurnstileWidget(cfg.turnstile_site_key, "turnstile-box")
             }
         } catch (e: Throwable) {
@@ -167,7 +174,24 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                         if (siteCfg?.email_code_enabled == true) {
                             Spacer(Modifier.height(14.dp))
                             AuthField(emailCode, { emailCode = it }, "邮箱验证码")
+                            if (email.isBlank()) {
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "本站要求邮箱验证码：请先填邮箱并点「发送验证码」",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
+                    } else {
+                        // 之前这里什么都不显示：注册被关闭时整个注册区（含邮箱框）静默消失，
+                        // 用户只会以为「注册功能没了 / 找不到填邮箱的地方」。
+                        Spacer(Modifier.height(14.dp))
+                        Text(
+                            "本站已关闭注册。管理员可在管理后台「认证设置」里勾选「允许注册」后重试。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
 
                     // 站点配置没拉到时给个明确提示，否则用户只会看到「这些区域凭空消失」
@@ -178,7 +202,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
 
                     // Turnstile：小组件由各平台 actual 负责渲染（只有 Web 端真的画得出来）
                     if (turnstileOn) {
-                        TurnstileSlot(turnstileToken, turnstileRenderable)
+                        TurnstileSlot(turnstileToken, turnstileRenderable, turnstileErr)
                     }
 
                     error?.let {
@@ -394,7 +418,7 @@ private fun OrDivider() {
  * 三种状态分开说：通过 / 平台不支持 / 组件没加载出来，避免一直卡在「加载中」。
  */
 @Composable
-private fun TurnstileSlot(token: String, renderable: Boolean) {
+private fun TurnstileSlot(token: String, renderable: Boolean, err: String? = null) {
     var timeout by remember { mutableStateOf(false) }
     LaunchedEffect(token) {
         timeout = false
@@ -411,6 +435,8 @@ private fun TurnstileSlot(token: String, renderable: Boolean) {
     ) {
         val (msg, color) = when {
             token.isNotEmpty() -> "✓ 人机验证通过" to MaterialTheme.colorScheme.primary
+            // 有具体原因就先说原因（错误码 / 域名不匹配 / 网络不通），比笼统的"加载失败"有用得多
+            err != null -> err to MaterialTheme.colorScheme.error
             !renderable -> "人机验证仅 Web 端支持：桌面/Android 请改用浏览器注册，或在管理后台关闭「人机验证」" to MaterialTheme.colorScheme.error
             timeout -> "人机验证组件加载失败（网络或 CSP 拦截了 challenges.cloudflare.com）" to MaterialTheme.colorScheme.error
             else -> "请在页面下方完成人机验证" to MaterialTheme.colorScheme.onSurfaceVariant

@@ -75,6 +75,8 @@ func main() {
 	a.admined(mux, "GET /admin/conversations", a.listConversations)
 	a.admined(mux, "GET /admin/site-config", a.getSiteConfig)
 	a.admined(mux, "PUT /admin/site-config", a.putSiteConfig)
+	// 用当前 SMTP 配置实发一封测试邮件：配置完立刻知道能不能用
+	a.admined(mux, "POST /admin/email/test", a.testEmail)
 
 	log.Printf("[admin] listening on %s", cfg.AdminAddr)
 	// 探针与指标
@@ -325,4 +327,36 @@ func (a *admin) putSiteConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// testEmail 用已保存的 SMTP 配置实发一封测试邮件。
+// 返回体带上实际收件地址，便于前端确认「到底发给谁了」（缺省发到配置里的发件人）。
+func (a *admin) testEmail(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		To string `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	c, err := siteconf.Load(a.db.DB)
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	to := strings.TrimSpace(req.To)
+	if to == "" {
+		// 没填就发给自己配置的发件人：最常见的「先确认 SMTP 通不通」用法
+		to = c.SMTPFrom
+		if to == "" {
+			to = c.SMTPUser
+		}
+	}
+	if err := siteconf.SendTestMail(c, to); err != nil {
+		// 400 而不是 500：绝大多数情况是配置问题（地址/口令/发件人不被接受），
+		// 前端应把这句话直接显示给管理员
+		fail(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "to": to})
 }

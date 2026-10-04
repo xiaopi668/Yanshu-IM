@@ -65,7 +65,14 @@
       <input id="cfgSmtpPort" placeholder="端口" style="width:80px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px"><br><br>
       <input id="cfgSmtpUser" placeholder="SMTP 用户" style="width:280px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px">
       <input id="cfgSmtpPass" placeholder="SMTP 密码" type="password" style="width:280px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px">
-      <input id="cfgSmtpFrom" placeholder="发件人" style="width:280px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px"><br><br>
+      <input id="cfgSmtpFrom" placeholder="发件人" style="width:280px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px"><br>
+      <div style="margin:10px 0 14px;padding:10px 12px;background:#f7f7fa;border-radius:8px;font-size:13px;line-height:1.9">
+        <b>SMTP 自检</b>：先用上面的字段填好并 <b>保存</b>，再点这里实发一封测试邮件。
+        留空则发到上面配置的发件人。<br>
+        <input id="cfgTestTo" placeholder="收件邮箱（留空=发件人）" style="width:280px;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px">
+        <button class="act" onclick="sendTestMail()">发送测试邮件</button>
+        <span id="testMailMsg" style="margin-left:8px"></span>
+      </div>
       <b>OIDC 提供商（JSON 数组）</b><br>
       <textarea id="cfgOidc" rows="5" style="width:600px;font-family:monospace;padding:6px 10px;border:1px solid #d2d2d7;border-radius:8px"></textarea>
       <div class="msg" id="authMsg"></div>
@@ -184,6 +191,21 @@ async function saveAuth() {
     document.getElementById('authMsg').textContent = '';
     alert('已保存');
   } catch (e) { document.getElementById('authMsg').textContent = String(e); }
+}
+async function sendTestMail() {
+  const to = document.getElementById('cfgTestTo').value.trim();
+  const msg = document.getElementById('testMailMsg');
+  msg.style.color = '#666';
+  msg.textContent = '发送中…';
+  try {
+    const r = await api('/admin/email/test', { method: 'POST', body: JSON.stringify({ to }) });
+    msg.style.color = '#1a7f37';
+    msg.textContent = '已发送到 ' + r.to + '（请查收，也看看垃圾箱）';
+  } catch (e) {
+    // 服务端把配置问题（地址/口令/发件人被拒）作为 400 返回，这里原样显示给管理员
+    msg.style.color = '#c0392b';
+    msg.textContent = String(e);
+  }
 }
 async function archive() {
   const day = document.getElementById('archiveDay').value.trim();
