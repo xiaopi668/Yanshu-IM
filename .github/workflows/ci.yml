@@ -152,6 +152,17 @@ jobs:
       # 不启 MinIO：E2E 只建无图动态，不涉及任何上传；
       # 附件相关的接口在存储不可用时返回 503，而 /healthz 只看 MySQL 与 Redis，
       # 因此少一个依赖反而更稳（也避免 CI 受镜像仓库配额/变更影响）。
+      - name: 初始化数据库
+        # CI 直接跑编译好的二进制，不经过 entrypoint.sh，因此建表要手工做一次；
+        # 本地调试时数据库通常已经存在，这个坑只会在干净环境暴露。
+        run: |
+          if command -v mysql >/dev/null; then
+            mysql -h127.0.0.1 -P3306 -uroot -proot123 < server/deploy/schema.sql
+          else
+            CID=$(docker ps -q --filter ancestor=mysql:8.4 | head -1)
+            docker exec -i "$CID" mysql -uroot -proot123 < server/deploy/schema.sql
+          fi
+          echo "schema applied"
       - name: 起服务端并跑 E2E
         run: |
           set -e
@@ -174,6 +185,8 @@ jobs:
           curl -s -X POST http://127.0.0.1:10002/v1/register -d '{"username":"alice","password":"secret1"}' >/dev/null
           curl -s -X POST http://127.0.0.1:10002/v1/register -d '{"username":"bob","password":"secret1"}'   >/dev/null
           cd ../client
+          # 同 client job：去掉 runner 预装的 Android SDK 影响（构建脚本见到 ANDROID_HOME 就加 androidTarget）
+          unset ANDROID_HOME ANDROID_SDK_ROOT
           ./gradlew --no-daemon :shared:desktopTest \
             --tests 'im.client.ImClientE2eTest' \
             --tests 'im.client.Phase2E2eTest' \
