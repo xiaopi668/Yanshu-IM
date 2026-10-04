@@ -84,7 +84,8 @@ jobs:
             --tests 'im.client.proto.*' \
             --tests 'im.client.store.*' \
             --tests 'im.client.net.*' \
-            --tests 'im.client.api.*'
+            --tests 'im.client.api.*' \
+            --tests 'im.client.auth.*'
 
   # Android 目标的构建保障。此前这里是完全空白：Android 源码从未被编译过，
   # 因此积累了三处致命问题（AGP 应用顺序、缺 android.useAndroidX、compileSdk 与

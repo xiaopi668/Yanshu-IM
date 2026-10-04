@@ -23,6 +23,7 @@ import im.client.ImClient
 import im.client.auth.SavedSession
 import im.client.auth.clearSession
 import im.client.auth.loadSession
+import im.client.auth.oidcTokenFromLaunch
 import im.client.auth.saveSession
 import im.client.net.ConnState
 import im.client.proto.Msg
@@ -51,6 +52,23 @@ fun AppRoot() {
 
             // 用本地存的 token 直接恢复登录 —— 桌面/Android 重启、Web 刷新都不该掉线
             LaunchedEffect(Unit) {
+                // OIDC 回调把令牌带回来了（Web 读 location.hash、Android 读启动 Intent）：
+                // 优先自动登录，用户不需要任何手工操作
+                val oidcToken = oidcTokenFromLaunch()
+                if (oidcToken != null) {
+                    try {
+                        val c = ImClient(DEFAULT_API.trimEnd('/'), DEFAULT_WS)
+                        c.wireCallbacks()
+                        c.loginWithToken(oidcToken)
+                        c.startSession()
+                        saveSession(SavedSession(c.myToken, c.apiBaseUrl, c.gatewayWsUrl))
+                        client = c
+                        restoring = false
+                        return@LaunchedEffect
+                    } catch (e: Throwable) {
+                        // 令牌无效/被撤销：继续走下面的常规恢复流程（必要时落到登录页）
+                    }
+                }
                 val saved = loadSession()
                 if (saved != null && saved.token.isNotEmpty() && saved.apiBase.isNotEmpty()) {
                     try {

@@ -17,7 +17,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import im.client.ImClient
+import im.client.auth.OidcLoginResult
 import im.client.auth.SavedSession
+import im.client.auth.oidcLogin
 import im.client.auth.saveSession
 import im.client.openUrl
 import im.client.registerTurnstileCallback
@@ -49,7 +51,23 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
     var turnstileRenderable by remember { mutableStateOf(false) }
     var showConn by remember { mutableStateOf(false) }
     var oidcToken by remember { mutableStateOf("") }
+    // 自动回调失败时才提示手工粘贴；成功路径下这个输入框根本用不上
+    var oidcManual by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    /** 拿到 OIDC 令牌后的统一登录动作：自动回调与手工粘贴共用 */
+    suspend fun finishOidcLogin(token: String) {
+        try {
+            val c = ImClient(apiBase.trimEnd('/'), wsBase)
+            c.wireCallbacks()
+            c.loginWithToken(token)
+            c.startSession()
+            saveSession(SavedSession(c.myToken, c.apiBaseUrl, c.gatewayWsUrl))
+            onLoggedIn(c)
+        } catch (e: Throwable) {
+            error = e.message ?: e.toString()
+        }
+    }
 
     // 站点配置跟随 API 地址：改地址必须重新拉。
     // 之前只在首次组合时拉一次、异常静默吞掉 —— 改完 API 地址后注册开关 / 人机验证 /
@@ -228,39 +246,63 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                         Spacer(Modifier.height(16.dp))
                         providers.forEach { p ->
                             OutlinedButton(
-                                onClick = { openUrl(p.authorize_url) },
+                                onClick = {
+                                    scope.launch {
+                                        busy = true
+                                        error = null
+                                        tip = null
+                                        try {
+                                            when (val r = oidcLogin(p.authorize_url, 5 * 60_000)) {
+                                                // 桌面：本地回环监听器已经拿到令牌
+                                                // Android：deep link 把令牌交回 App
+                                                is OidcLoginResult.Token -> finishOidcLogin(r.token)
+                                                // Web：页面正在跳去授权方，回来后由 AppRoot 消费 fragment
+                                                OidcLoginResult.Redirecting -> Unit
+                                                // 拿不到自动回调才退回手工粘贴
+                                                is OidcLoginResult.Manual -> {
+                                                    oidcManual = true
+                                                    tip = r.reason
+                                                    openUrl(p.authorize_url)
+                                                }
+                                            }
+                                        } catch (e: Throwable) {
+                                            error = e.message ?: e.toString()
+                                        } finally {
+                                            busy = false
+                                        }
+                                    }
+                                },
                                 modifier = Modifier.fillMaxWidth().height(44.dp),
                                 shape = RoundedCornerShape(12.dp),
                             ) { Text("使用 ${p.name} 登录") }
                         }
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            "授权成功后会打开「雁书 · OIDC 登录」页，把那里的令牌复制过来粘贴到下方",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        AuthField(oidcToken, { oidcToken = it }, "OIDC Token")
-                        Spacer(Modifier.height(12.dp))
-                        FilledTonalButton(
-                            enabled = oidcToken.isNotBlank() && !busy,
-                            onClick = {
-                                scope.launch {
-                                    try {
-                                        val client = ImClient(apiBase.trimEnd('/'), wsBase)
-                                        client.wireCallbacks()
-                                        client.loginWithToken(oidcToken.trim())
-                                        client.startSession()
-                                        saveSession(SavedSession(client.myToken, client.apiBaseUrl, client.gatewayWsUrl))
-                                        onLoggedIn(client)
-                                    } catch (e: Throwable) {
-                                        error = e.message ?: e.toString()
+                        if (oidcManual) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                "自动回跳不可用，请从授权成功页复制令牌粘贴到下方（管理员可在服务端配置 " +
+                                    "IM_OIDC_RETURN_ALLOWLIST 打开自动回跳）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            AuthField(oidcToken, { oidcToken = it }, "OIDC Token")
+                            Spacer(Modifier.height(12.dp))
+                            FilledTonalButton(
+                                enabled = oidcToken.isNotBlank() && !busy,
+                                onClick = {
+                                    scope.launch {
+                                        busy = true
+                                        try {
+                                            finishOidcLogin(oidcToken.trim())
+                                        } finally {
+                                            busy = false
+                                        }
                                     }
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth().height(44.dp),
-                            shape = RoundedCornerShape(12.dp),
-                        ) { Text("完成 OIDC 登录") }
+                                },
+                                modifier = Modifier.fillMaxWidth().height(44.dp),
+                                shape = RoundedCornerShape(12.dp),
+                            ) { Text("完成 OIDC 登录") }
+                        }
                     }
 
                     // 服务器地址默认收起，避免和主表单抢视线；改了会自动重新拉站点配置

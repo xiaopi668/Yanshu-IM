@@ -41,6 +41,11 @@ type Config struct {
 	PublicBaseURL string
 	// 允许的跨源来源（逗号分隔）。为空时 CORS 放行 *、WS 校验回落到"同 Host 或无 Origin"。
 	AllowedOrigins []string
+	// OIDC 登录成功后允许的回跳目标白名单（逗号分隔的**前缀**），用于「浏览器授权完自动把令牌交回客户端」：
+	// 桌面端填 http://127.0.0.1 / http://localhost（本地回环监听器，端口任意），
+	// Android 填自定义 scheme（如 yanshu:）。
+	// 为空时只允许与本站同源的回跳，即落到 /oidc-done 让用户手工复制令牌。
+	OIDCReturnAllowlist []string
 	// 是否信任反向代理的 X-Forwarded-For / X-Forwarded-Host（默认 false，防止伪造客户端 IP）
 	TrustProxy bool
 	// 生产模式：为 true 时拒绝使用内置的开发期默认密钥
@@ -81,9 +86,10 @@ func Load() *Config {
 		LiveKitAPIKey:    fromEnv("IM_LIVEKIT_API_KEY", "devkey"),
 		LiveKitAPISecret: fromEnv("IM_LIVEKIT_API_SECRET", DefaultLiveKitSecret),
 
-		PublicBaseURL:  strings.TrimRight(os.Getenv("IM_PUBLIC_BASE_URL"), "/"),
-		AllowedOrigins: splitList(os.Getenv("IM_ALLOWED_ORIGINS")),
-		TrustProxy:     os.Getenv("IM_TRUST_PROXY") == "true",
+		PublicBaseURL:       strings.TrimRight(os.Getenv("IM_PUBLIC_BASE_URL"), "/"),
+		AllowedOrigins:      splitList(os.Getenv("IM_ALLOWED_ORIGINS")),
+		OIDCReturnAllowlist: splitList(os.Getenv("IM_OIDC_RETURN_ALLOWLIST")),
+		TrustProxy:          os.Getenv("IM_TRUST_PROXY") == "true",
 		RequireStrongSecrets: os.Getenv("IM_REQUIRE_STRONG_SECRETS") == "true" ||
 			os.Getenv("IM_ENV") == "production",
 		AuthRateLimit: int64(fromEnvInt("IM_AUTH_RATE_LIMIT", 60)),

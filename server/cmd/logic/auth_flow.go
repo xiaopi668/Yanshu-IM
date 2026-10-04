@@ -234,22 +234,69 @@ func checkRedirectURI(ours, got string, p *siteconf.OIDCProvider) error {
 	return errors.New("redirect_uri 不在允许列表内")
 }
 
-// checkReturnTo 校验登录成功后浏览器的最终去向，必须与本站同源
-func checkReturnTo(base, got string) (string, error) {
+// checkReturnTo 校验登录成功后浏览器的最终去向。
+//
+// 默认只允许与本站同源；此外可用 IM_OIDC_RETURN_ALLOWLIST 显式放行
+// 「本地回环监听器」与「客户端自定义 scheme」，让令牌自动交回客户端，
+// 用户不必再从浏览器里复制粘贴（fragment/query 的选择见 returnUsesFragment）。
+func checkReturnTo(base, got string, allow []string) (string, error) {
 	if got == "" {
 		// 缺省落在本站的令牌展示页（首页 / 是 404，token 在 fragment 里没人展示）
 		return base + "/oidc-done", nil
 	}
 	u, err := url.Parse(got)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+	if err != nil || u.Scheme == "" {
+		return "", errors.New("return_to 非法")
+	}
+	if (u.Scheme == "http" || u.Scheme == "https") && u.Host == "" {
 		return "", errors.New("return_to 需为 http(s) 绝对地址")
 	}
-	b, err := url.Parse(base)
-	if err != nil || !strings.EqualFold(u.Host, b.Host) {
-		return "", errors.New("return_to 必须与本站同源")
+	if !sameOrigin(base, got) && !returnAllowed(got, allow) {
+		return "", errors.New("return_to 必须与本站同源，或在 IM_OIDC_RETURN_ALLOWLIST 白名单内")
 	}
-	u.Fragment = "" // token 走 fragment，避免与已有 fragment 冲突
+	u.Fragment = "" // 不复用已有 fragment，避免冲突
 	return u.String(), nil
+}
+
+// sameOrigin 同源判断：scheme 也必须一致，https 站点不能把令牌降级到 http
+func sameOrigin(base, got string) bool {
+	b, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	u, err := url.Parse(got)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, b.Scheme) && strings.EqualFold(u.Host, b.Host)
+}
+
+// returnAllowed 白名单前缀匹配，且必须止于「边界」字符：
+// 否则 http://127.0.0.1 会把 http://127.0.0.1.evil.com 一起放行 —— 那就是开放重定向。
+func returnAllowed(got string, allow []string) bool {
+	g := strings.ToLower(got)
+	for _, p := range allow {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" || !strings.HasPrefix(g, p) {
+			continue
+		}
+		if len(g) == len(p) {
+			return true
+		}
+		switch g[len(p)] {
+		case '/', '?', '#', ':':
+			return true
+		}
+	}
+	return false
+}
+
+// returnUsesFragment 决定令牌放 fragment 还是 query：
+//   - 同源页面：fragment（不进服务端日志与 Referer，页面用 JS 读）
+//   - 本地回环监听器 / 自定义 scheme：**必须 query** —— 这两者根本拿不到 fragment
+//     （fragment 不会被浏览器发出，也不会出现在交给系统的 URI 里）
+func returnUsesFragment(base, target string) bool {
+	return sameOrigin(base, target)
 }
 
 // oidcDonePage OIDC 授权成功后的落地页。
@@ -324,7 +371,7 @@ func (a *apiv1) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	returnURI, err := checkReturnTo(base, returnTo)
+	returnURI, err := checkReturnTo(base, returnTo, a.cfg.OIDCReturnAllowlist)
 	if err != nil {
 		fail(w, 400, err)
 		return
@@ -387,7 +434,7 @@ func (a *apiv1) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	returnURI, err := checkReturnTo(base, returnTo)
+	returnURI, err := checkReturnTo(base, returnTo, a.cfg.OIDCReturnAllowlist)
 	if err != nil {
 		fail(w, 400, err)
 		return
@@ -449,8 +496,20 @@ func (a *apiv1) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tok, _ := auth.MakeToken(a.cfg.JWTSecret, uid, "oidc", st.TokenVersion)
-	// 回跳到发起登录时的页面，token 放 fragment（同源校验已在 authorize/callback 两处做过）
-	http.Redirect(w, r, returnURI+"#token="+tok+"&uid="+uid, http.StatusFound)
+	// 回跳到发起登录时的页面（同源校验已在 authorize/callback 两处做过）。
+	// 同源页面用 fragment（不进服务端日志/Referer，页面 JS 读取后自动登录）；
+	// 本地回环监听器与自定义 scheme 拿不到 fragment，必须放 query 才能收到令牌。
+	target := returnURI
+	if returnUsesFragment(base, returnURI) {
+		target += "#token=" + tok + "&uid=" + uid
+	} else {
+		sep := "?"
+		if strings.Contains(returnURI, "?") {
+			sep = "&"
+		}
+		target += sep + "token=" + url.QueryEscape(tok) + "&uid=" + url.QueryEscape(uid)
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 func nullIfEmpty(s string) any {

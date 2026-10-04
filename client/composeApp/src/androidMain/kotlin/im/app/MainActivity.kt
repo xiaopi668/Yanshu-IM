@@ -1,5 +1,6 @@
 package im.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import im.client.auth.AndroidOidc
 import im.client.db.appContext
 import im.client.file.AndroidFilePicker
 
@@ -26,6 +28,8 @@ class MainActivity : ComponentActivity() {
         //（shared 拿不到 Activity，这是唯一的接入点；不注入时 pickFile() 返回 null）
         AndroidFilePicker.launch = { mimes -> pickFileLauncher.launch(mimes) }
         AndroidFilePicker.resolver = contentResolver
+        // OIDC 回调：App 被回收后由 yanshu:// deep link 冷启动，令牌就在这个 Intent 里
+        AndroidOidc.onUri(intent?.data)
         setContent {
             MaterialTheme {
                 Surface(Modifier.fillMaxSize()) {
@@ -33,5 +37,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    // App 在后台时浏览器回跳会走这里（manifest 里 MainActivity 设为 singleTask）
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        AndroidOidc.onUri(intent.data)
     }
 }

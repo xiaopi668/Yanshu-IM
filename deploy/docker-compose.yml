@@ -138,6 +138,11 @@ services:
       IM_MYSQL_PASSWORD: ${IM_APP_PASSWORD:?}
       IM_REDIS_ADDR: redis:6379
       IM_JWT_SECRET: ${IM_JWT_SECRET:?必须设置 IM_JWT_SECRET（登录令牌签名密钥）}
+      # OIDC 自动回调白名单（逗号分隔前缀）。留空 = 只允许本站同源：
+      # 浏览器授权完落到 /oidc-done，用户仍需手工复制令牌粘贴回客户端。
+      # 想让桌面端与 Android「授权完自动登录」，在 .env 里设置（见 .env.example）：
+      #   IM_OIDC_RETURN_ALLOWLIST=http://127.0.0.1,http://localhost,yanshu:
+      IM_OIDC_RETURN_ALLOWLIST: ${IM_OIDC_RETURN_ALLOWLIST:-}
       IM_STORAGE_ENDPOINT: minio:9000
       IM_STORAGE_ACCESS_KEY: ${IM_MINIO_ROOT_USER:?}
       IM_STORAGE_SECRET_KEY: ${IM_MINIO_ROOT_PASSWORD:?}

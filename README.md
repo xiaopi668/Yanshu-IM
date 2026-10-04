@@ -78,6 +78,15 @@ compose 里三个服务都配了基于 `/healthz` 的 healthcheck —— `docker
 巡检一次，发现封禁或令牌版本落后就断开。重置密码会 `token_version+1`，
 该账号此前签发的所有 JWT 当场作废。
 
+**OIDC 登录（默认不需要用户复制令牌）**：授权成功后令牌怎么回到客户端，按平台分三种，都不用用户手工复制：
+
+- **Web**：页面本身就是回调目标（同源），服务端把令牌放在 URL fragment，页面加载时读取并**立即从地址栏抹掉**
+- **桌面**：客户端起本地回环监听器（`127.0.0.1` 随机端口，RFC 8252 做法），服务端以 query 回跳给它，浏览器显示「登录成功，可以关闭此页」
+- **Android**：自定义 scheme `yanshu://oidc/callback` 把令牌交回 App（`singleTask` + `onNewIntent`）
+
+桌面与 Android 的回跳目标不在本站同源范围内，需要在 `IM_OIDC_RETURN_ALLOWLIST` 里显式放行；
+**没配置时会自动退回「浏览器展示令牌 + 用户粘贴」的老流程**（登录页出现令牌输入框），不会把人锁在门外。
+
 **附件下载（不让账号凭证随消息扩散）**：消息里只存对象存储 key（`Attachment.url` 承载 key），
 取用时调用方用**自己的**登录态向 `POST /v1/attachments/ticket` 换一张短时票据
 （HMAC 签名、与单个 key 绑定、10 分钟过期），再 `GET /v1/download?key=..&ticket=..`。
@@ -187,6 +196,7 @@ docker compose -f deploy/docker-compose.yml up -d
 | `IM_NODE_ID` | 角色默认（gateway=1 / logic=2） | 雪花 ID 节点号。**多副本部署必须给每个实例设不同值**，否则同毫秒内会生成相同 ID（消息撞 `uk_msg_id`、注册撞主键、建群撞群 ID） |
 | `IM_PUBLIC_BASE_URL` | 从请求推断 | OIDC `redirect_uri` 与附件下载票据的对外基地址，**生产必须显式设置**，否则会指到内网地址 |
 | `IM_ALLOWED_ORIGINS` | 不限 | 逗号分隔的 Origin 白名单；**不设置 = 保持原有宽松行为**（CORS `*`、WS 允许任意 Origin），设置后严格匹配 |
+| `IM_OIDC_RETURN_ALLOWLIST` | 空 | OIDC 登录成功后允许回跳的目标前缀（逗号分隔）。**留空 = 只允许本站同源**：浏览器授权完落在 `/oidc-done`、需用户手工复制令牌；填 `http://127.0.0.1,http://localhost,yanshu:` 可让桌面端与 Android **授权完自动登录**（Web 端本来同源，无需配置）。这是开放重定向的唯一防线，只放行信任目标 |
 | `IM_TRUST_PROXY` | `false` | 置 `true` 才信任 `X-Forwarded-For` / `X-Forwarded-Host`（放在 Nginx/Caddy 后面时需要）。**只支持一层可信反代**：取 XFF 最后一段；且来自代理头的地址不再享受 loopback 限流豁免 |
 | `IM_AUTH_RATE_LIMIT` | `60` | 登录/注册每 IP、5 分钟内允许的次数；`0` 关闭。**仅直连的 loopback 不计数**（本机开发/单测不受影响）；若所有客户端都从同一 NAT 出口进来，请调大该值 |
 
