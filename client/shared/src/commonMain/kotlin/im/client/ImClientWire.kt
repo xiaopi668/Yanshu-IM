@@ -63,6 +63,10 @@ fun ImClient.wireCallbacks(scope: CoroutineScope = CoroutineScope(SupervisorJob(
             // 重连成功：把断线期间没发出去 / 没被确认的消息补发一遍。
             // 服务端按 client_msg_id 幂等，重发不会产生重复消息。
             flushOutbox()
+        } else {
+            // 鉴权被拒（token 失效 / 被封禁 / 令牌被管理员撤销）：
+            // 这是终态，重连没有意义，交给 UI 清会话回登录页
+            onAuthRejected(r.reason ?: "unauthorized")
         }
     }.launchIn(scope)
 }

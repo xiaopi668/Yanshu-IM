@@ -110,13 +110,6 @@ curl -X POST http://127.0.0.1:10002/v1/register \
 
 ## 客户端构建
 
-> ⚠️ 仓库**尚未提交 Gradle Wrapper**（缺 `gradlew` 与 `gradle/wrapper/gradle-wrapper.jar`），
-> 所以全新 clone 里下面这些 `./gradlew` 会直接报"没有那个文件"。先用本机 Gradle 生成一次：
->
-> ```bash
-> cd client && gradle wrapper --gradle-version 9.5.0   # 需要本机已装 Gradle
-> ```
-
 ```bash
 cd client
 ./gradlew :composeApp:desktopRun                 # Windows/Linux 桌面
@@ -159,7 +152,7 @@ cd server && go vet ./...
 # （compose 里已带 MySQL/Redis，起完后三个进程的环境变量见 docker-compose.yml）
 go test -tags smoke ./cmd/gateway -run TestSmoke -v
 
-cd client && gradle :shared:desktopTest    # KMP 客户端单测 + E2E
+cd client && ./gradlew :shared:desktopTest   # KMP 客户端单测 + E2E（E2E 需先起好服务端）
 
 # 改了 proto 之后重建双端金样本
 ./proto/gen.sh --update
@@ -167,7 +160,9 @@ cd client && UPDATE_CLIENT_GOLDEN=1 gradle :shared:desktopTest --tests 'im.clien
 ```
 
 客户端 E2E（`ImClientE2eTest` / `Phase2E2eTest` / `Phase3E2eTest`）需要本地起好
-MySQL/Redis + logic + gateway，并预先注册 `alice` / `bob`（密码 `secret1`）：
+MySQL/Redis + logic + gateway，并预先注册 `alice` / `bob`（密码 `secret1`）。
+服务端不在默认端口时用 `IM_TEST_API` / `IM_TEST_WS` 指定；
+本地库目录可用 `IM_CLIENT_DB_DIR` 重定向（**建议测试时指定**，否则切账号会清掉 `~/.yanshu` 里真实的本地缓存）：
 
 ```bash
 curl -X POST http://127.0.0.1:10002/v1/register -d '{"username":"alice","password":"secret1"}'
@@ -190,7 +185,6 @@ curl -X POST http://127.0.0.1:10002/v1/register -d '{"username":"bob","password"
 - Android 系统推送（自建 ntfy/FCM 网关）、E2E 加密
 - Android 端 `pickFile()` 仍是空实现（恒返回 null），**Android 无法发图片/文件**；
   `openUrl()` 已实现。Android/桌面端的 Turnstile 也是空实现，站点一旦开启 Turnstile 这两端将无法注册登录
-- 仓库未提交 Gradle Wrapper（缺 `gradlew`），客户端构建需先用本机 Gradle 生成一次
 - 归档 key 已改为随机串，管理后台通过 `archive_log.object_key` 查看；旧版本用
   `archive/<日期>/<会话ID>.jsonl` 落下的历史对象不在新白名单内，需要人工迁移或清理
 

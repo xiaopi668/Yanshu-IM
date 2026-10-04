@@ -47,7 +47,8 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
                 if (c.id == OWNER_ROW) { cacheOwnerUid = c.title; return@forEach }
                 _conversations.value = _conversations.value + Conversation(c.id, c.type, c.title, c.last_seq, c.read_seq)
                 _maxSeqs.value = _maxSeqs.value + (c.id to c.last_seq)
-                val recent = database.imQueries.loadRecent(c.id, 50).executeAsList()
+                // SQL 是 seq DESC 取最新 50 条，这里翻回升序供 UI 直接渲染
+                val recent = database.imQueries.loadRecent(c.id, 50).executeAsList().asReversed()
                 if (recent.isNotEmpty()) {
                     _messages.value = _messages.value + (c.id to recent.map { r ->
                         Msg(

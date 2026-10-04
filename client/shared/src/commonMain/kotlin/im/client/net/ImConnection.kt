@@ -74,12 +74,19 @@ class ImConnection(private val gatewayWsUrl: String) {
     private var sessionJob: Job? = null
     private var heartbeatJob: Job? = null
     private var reconnectAttempts = 0
+    /**
+     * 服务端明确拒绝过鉴权（token 失效 / 账号被封）。
+     * 这种情况下重连再多次也没用，只会让 UI 一直停在"连接中"，
+     * 所以要停下来交给上层清会话回登录页。
+     */
+    private var authRejected = false
     /** 心跳回包计数：读循环里 +1，心跳协程观察是否超时（StateFlow 跨线程安全） */
     private val pongCount = MutableStateFlow(0L)
 
     fun connect(token: String) {
         this.token = token
         reconnectAttempts = 0
+        authRejected = false
         sessionJob?.cancel()
         sessionJob = scope.launch { openSession() }
     }
@@ -169,8 +176,12 @@ class ImConnection(private val gatewayWsUrl: String) {
             ws = null
             socket.close()
         }
-        // 会话真正断开：状态回 Disconnected，再按指数退避重连（token=null 时停手）
+        // 会话真正断开：状态回 Disconnected，再按指数退避重连
         _state.value = ConnState.Disconnected
+        if (authRejected) {
+            // 鉴权被拒 → 停在这里，由 sessionInvalid 通知 UI 清会话回登录页
+            return
+        }
         scheduleReconnect()
     }
 
@@ -183,7 +194,11 @@ class ImConnection(private val gatewayWsUrl: String) {
                 if (kind.data.ok) {
                     _state.value = ConnState.Authenticated
                     reconnectAttempts = 0
+                    authRejected = false
                     startHeartbeat()
+                } else {
+                    // 鉴权被拒是终态，不是网络抖动：标记后不再重连
+                    authRejected = true
                 }
                 _authResults.tryEmit(kind.data)
             }
@@ -218,11 +233,21 @@ class ImConnection(private val gatewayWsUrl: String) {
         }
     }
 
+    /**
+     * 断线重连：指数退避 + 抖动，封顶 [MAX_BACKOFF_MS]，**永不放弃**。
+     *
+     * 早期实现最多重连 6 次（合计约 2 分钟）就 return，之后再也不连 ——
+     * 移动端进电梯/地铁隧道、笔记本合盖一晚，客户端就"死"了，只能重启 App。
+     * 现在只在这些情况下停手：用户主动退出（token=null）、服务端已明确拒绝鉴权。
+     */
     private fun scheduleReconnect() {
-        if (token == null) return                     // 用户主动退出/切换账号
-        if (++reconnectAttempts > MAX_RECONNECT) return   // 指数退避最多重连 6 次
+        if (token == null) return      // 用户主动退出/切换账号
+        if (authRejected) return       // 鉴权被拒：重连没有意义
         sessionJob = scope.launch {
-            delay((1L shl reconnectAttempts) * 1_000)
+            val n = ++reconnectAttempts
+            // 2s,4s,8s,16s,32s→封顶 30s；抖动避免服务端恢复瞬间被全量客户端同时打爆
+            val backoff = minOf((1L shl minOf(n, 5)) * 1_000L, MAX_BACKOFF_MS)
+            delay(backoff + Random.nextLong(0, 500))
             openSession()
         }
     }
@@ -232,7 +257,7 @@ class ImConnection(private val gatewayWsUrl: String) {
         const val PING_PERIOD = 20_000L
         /** 发 ping 后等 pong 的超时，超过即认为连接已死 */
         const val PONG_WAIT = 10_000L
-        /** 断线重连最大次数 */
-        const val MAX_RECONNECT = 6
+        /** 重连退避上限 */
+        const val MAX_BACKOFF_MS = 30_000L
     }
 }

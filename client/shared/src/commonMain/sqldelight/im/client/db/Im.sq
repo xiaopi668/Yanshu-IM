@@ -35,8 +35,10 @@ UPDATE message_cache SET pending = ? WHERE client_msg_id = ?;
 deletePending:
 DELETE FROM message_cache WHERE client_msg_id = ? AND pending = 1;
 
+-- 取「最新」N 条（DESC），调用方再翻回升序。
+-- 早期写成 ASC：会话超过 50 条时，重启后只剩最旧的 50 条，新消息插在中间，历史是断的。
 loadRecent:
-SELECT * FROM message_cache WHERE conversation_id = ? ORDER BY seq ASC LIMIT ?;
+SELECT * FROM message_cache WHERE conversation_id = ? ORDER BY seq DESC LIMIT ?;
 
 loadAllConversations:
 SELECT * FROM conversation_cache;

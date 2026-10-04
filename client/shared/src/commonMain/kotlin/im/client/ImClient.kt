@@ -12,6 +12,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlin.random.Random
@@ -45,6 +47,19 @@ class ImClient(
     val conversations = store.conversations
     val messages = store.messages
     val connectionState = connection.state
+
+    private val _sessionInvalid = MutableStateFlow<String?>(null)
+    /**
+     * 非空表示服务端拒绝鉴权（token 失效 / 账号被封 / 令牌被撤销）。
+     * UI 观察到后应清本地会话并回到登录页 —— 否则用户只会看到一直"连接中"。
+     */
+    val sessionInvalid: StateFlow<String?> = _sessionInvalid
+
+    /** 鉴权被拒：停掉连接与重连，并把原因交给 UI */
+    internal fun onAuthRejected(reason: String) {
+        _sessionInvalid.value = reason
+        connection.disconnect()
+    }
 
     private var syncJob: Job? = null
 

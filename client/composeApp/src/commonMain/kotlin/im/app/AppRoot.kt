@@ -71,14 +71,27 @@ fun AppRoot() {
             when {
                 restoring -> SplashScreen()
                 client == null -> LoginScreen(onLoggedIn = { client = it })
-                else -> MainScreen(
-                    client!!,
-                    onLogout = {
-                        clearSession()
-                        client!!.stop()
-                        client = null
-                    },
-                )
+                else -> {
+                    val c = client!!
+                    // 服务端拒绝鉴权（token 失效 / 账号被封 / 令牌被撤销）：清会话回登录页。
+                    // 没有这条通路时，用户只会看到一直"连接中"，唯一的出路是手动清数据重装。
+                    val invalid by c.sessionInvalid.collectAsState()
+                    LaunchedEffect(invalid) {
+                        if (invalid != null) {
+                            clearSession()
+                            c.stop()
+                            client = null
+                        }
+                    }
+                    MainScreen(
+                        c,
+                        onLogout = {
+                            clearSession()
+                            c.stop()
+                            client = null
+                        },
+                    )
+                }
             }
         }
     }
