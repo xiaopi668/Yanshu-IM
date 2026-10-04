@@ -11,7 +11,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import im.client.ImClient
@@ -459,7 +458,9 @@ fun NetImage(api: im.client.api.Api, token: String, key: String, modifier: Modif
             val url = api.attachmentUrl(token, key)
             val (code, data) = im.client.api.Http.getBinary(url)
             if (code in 200..299) {
-                bmp = org.jetbrains.skia.Image.makeFromEncoded(data).toComposeImageBitmap()
+                // 解码走各平台实现（Android 用 BitmapFactory，desktop/wasm 用 skiko）
+                bmp = decodeImageBitmap(data)
+                if (bmp == null) failed = true
             } else {
                 failed = true
             }

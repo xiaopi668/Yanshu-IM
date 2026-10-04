@@ -1,4 +1,4 @@
-import com.android.build.gradle.internal.dsl.BaseAppModuleExtension
+import com.android.build.api.dsl.ApplicationExtension
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -49,20 +49,26 @@ kotlin {
         val desktopMain by getting {
             dependencies { implementation(compose.desktop.currentOs) }
         }
+        // Android 侧需要 activity-compose 提供 ComponentActivity / setContent /
+        // registerForActivityResult —— 这些不在 compose 的通用依赖里
+        if (hasAndroidSdk) getByName("androidMain") { dependencies {
+            implementation(libs.androidx.activity.compose)
+        } }
     }
 }
 
 if (hasAndroidSdk) {
-    extensions.configure<BaseAppModuleExtension>("android") {
+    extensions.configure<ApplicationExtension>("android") {
         namespace = "im.app"
-        compileSdk = 36
-        // 显式钉住 build-tools：AGP 的默认值是 35.0.0，与 compileSdk 36 不匹配，
-        // 且默认行为是「去 SDK 目录里装」——在只读 SDK（或 CI 未预装）时会直接失败。
-        buildToolsVersion = "36.0.0"
+        // compileSdk 37：Compose 1.12 的 Android 产物明确要求（AGP 也需 ≥ 9.1）
+        compileSdk = 37
+        // 显式钉住 build-tools：默认值是「某个 AGP 内置版本」，且会尝试往 SDK 目录里装，
+        // 在只读 SDK（或 CI 未预装）时直接失败。
+        buildToolsVersion = "37.0.0"
         defaultConfig {
             applicationId = "im.app"
             minSdk = 26
-            targetSdk = 36
+            targetSdk = 37
             versionCode = 1
             versionName = "0.1.0"
         }

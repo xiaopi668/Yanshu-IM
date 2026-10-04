@@ -1,4 +1,4 @@
-import com.android.build.gradle.LibraryExtension
+import com.android.build.api.dsl.LibraryExtension
 
 val hasAndroidSdk = System.getenv("ANDROID_HOME") != null ||
         rootProject.file("local.properties").exists()
@@ -50,8 +50,8 @@ kotlin {
 if (hasAndroidSdk) {
     extensions.configure<LibraryExtension>("android") {
         namespace = "im.client.shared"
-        compileSdk = 36
-        buildToolsVersion = "36.0.0"
+        compileSdk = 37
+        buildToolsVersion = "37.0.0"
         defaultConfig { minSdk = 26 }
     }
 }

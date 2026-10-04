@@ -128,6 +128,17 @@ cd client
 ./gradlew :composeApp:assembleDebug              # Android APK（需要 Android SDK）
 ```
 
+**Android 构建的前置条件**（不满足时 Android 目标会被自动跳过，只构建 desktop/wasm —— 这是有意的，方便只做桌面/Web 开发时不必装 SDK）：
+
+| 项 | 要求 |
+|---|---|
+| JDK | 17+ |
+| `ANDROID_HOME` | 指向 Android SDK（未设置时跳过 Android 目标） |
+| SDK 组件 | `platforms;android-37.0` + `build-tools;37.0.0`（用 `sdkmanager --install` 安装） |
+| Gradle / AGP | Gradle 9.6+、AGP 9.4.x（wrapper 已配置，无需手动指定） |
+
+CI 的 `android` job 会自动装好这些，并把 APK 作为 artifact 上传。
+
 登录页填入服务端 API/WS 地址即可（默认 127.0.0.1:10002 / :10001）。
 
 ### 从旧版本升级：root 连库 → 最小权限账号
@@ -221,14 +232,10 @@ curl -X POST http://127.0.0.1:10002/v1/register -d '{"username":"bob","password"
 - TLS 需要在反向代理层终止，服务端本身只监听明文 HTTP/WS
 - 桌面端音视频媒体（libwebrtc JNI 绑定）、Web 端通话媒体（livekit-client JS interop）
 - Android 系统推送（自建 ntfy/FCM 网关）、E2E 加密
-- **Android 目标的构建目前跑不通**（历史遗留，已定位到三处，需要单独一批处理）：
-  1. Compose 1.12.0 的 Android 产物要求 **AGP ≥ 9.1.0 且 compileSdk ≥ 37**，项目当前是 AGP 8.13 + compileSdk 36
-  2. `composeApp` 缺少 `androidx.activity:activity-compose` 等 Android 依赖
-     （MainActivity 里的 `ComponentActivity`/`setContent`/`registerForActivityResult` 全部未解析）
-  3. `commonMain` 的 `NetImage` 用了 skiko 专有 API（`org.jetbrains.skia.Image` /
-     `toComposeImageBitmap`），Android 上不存在，需要抽成 expect/actual
-  已修掉两处致命缺陷（AGP 应用顺序、`android.useAndroidX`），`pickFile()` 的 Android 实现也已补上，
-  `shared` 模块的 androidMain 可编译通过；但整个 APK 仍无法产出，因此 Android 暂未纳入 CI
+- Android 依赖 **AGP 兼容模式**：AGP 9 起 `com.android.*` 与 `org.jetbrains.kotlin.multiplatform`
+  不再直接兼容，当前用官方给的 `android.builtInKotlin=false` + `android.newDsl=false` 绕过。
+  长期方案是把 `shared` 迁到 `com.android.kotlin.multiplatform.library`、
+  把 `composeApp` 拆成「非 KMP 的 app 模块 + KMP UI 库」
 - Android/桌面端的 Turnstile 仍是空实现，站点一旦开启 Turnstile 这两端将无法注册登录
 - 归档 key 已改为随机串，管理后台通过 `archive_log.object_key` 查看；旧版本用
   `archive/<日期>/<会话ID>.jsonl` 落下的历史对象不在新白名单内，需要人工迁移或清理
