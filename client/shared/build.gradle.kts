@@ -10,6 +10,11 @@ plugins {
     alias(libs.plugins.android.lib) apply false
 }
 
+// 同 composeApp：AGP 必须先于 androidTarget() 应用（见该文件的说明）
+if (hasAndroidSdk) {
+    apply(plugin = libs.plugins.android.lib.get().pluginId)
+}
+
 kotlin {
     if (hasAndroidSdk) androidTarget()
     jvm("desktop")
@@ -43,10 +48,10 @@ kotlin {
 }
 
 if (hasAndroidSdk) {
-    apply(plugin = libs.plugins.android.lib.get().pluginId)
     extensions.configure<LibraryExtension>("android") {
         namespace = "im.client.shared"
         compileSdk = 36
+        buildToolsVersion = "36.0.0"
         defaultConfig { minSdk = 26 }
     }
 }

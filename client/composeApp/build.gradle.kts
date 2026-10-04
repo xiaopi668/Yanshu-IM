@@ -13,6 +13,14 @@ plugins {
     alias(libs.plugins.android.app) apply false
 }
 
+// AGP 必须在 androidTarget() 之前应用：Kotlin 插件在创建 android 目标时会校验
+// 「Android Gradle Plugin 是否已就位」，晚一步 apply 就会报 Missing Android Gradle Plugin。
+// 之前这段 apply 写在 kotlin{} 之后，导致只要设了 ANDROID_HOME 构建就必然失败 ——
+// 也就是 Android 目标其实从来没有编译通过过。
+if (hasAndroidSdk) {
+    apply(plugin = libs.plugins.android.app.get().pluginId)
+}
+
 kotlin {
     if (hasAndroidSdk) androidTarget {
         compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
@@ -45,10 +53,12 @@ kotlin {
 }
 
 if (hasAndroidSdk) {
-    apply(plugin = libs.plugins.android.app.get().pluginId)
     extensions.configure<BaseAppModuleExtension>("android") {
         namespace = "im.app"
         compileSdk = 36
+        // 显式钉住 build-tools：AGP 的默认值是 35.0.0，与 compileSdk 36 不匹配，
+        // 且默认行为是「去 SDK 目录里装」——在只读 SDK（或 CI 未预装）时会直接失败。
+        buildToolsVersion = "36.0.0"
         defaultConfig {
             applicationId = "im.app"
             minSdk = 26
