@@ -96,11 +96,18 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
       - name: 安装 platform 37 与 build-tools 37
+        # runner 镜像自带 Android SDK 并已导出 ANDROID_HOME，这里只需补装 37 的组件；
+        # 不用第三方 setup-android：它在 runner 上会失败，而 SDK 本来就是现成的。
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install "platforms;android-37.0" "build-tools;37.0.0"
+          SDK="$ANDROID_HOME"
+          [ -n "$SDK" ] || SDK=/usr/local/lib/android/sdk
+          SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKM" ] || SDKM=$(command -v sdkmanager)
+          "$SDKM" --version || true
+          yes | "$SDKM" --sdk_root="$SDK" --licenses > /dev/null || true
+          "$SDKM" --sdk_root="$SDK" --install "platforms;android-37.0" "build-tools;37.0.0"
+          echo "installed:"; ls "$SDK/platforms" "$SDK/build-tools"
       - uses: gradle/actions/setup-gradle@v4
       - name: 构建 debug APK
         working-directory: client
