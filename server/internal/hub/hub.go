@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 
+	"im/internal/metrics"
 	"im/internal/pb"
 )
 
@@ -160,6 +161,9 @@ func (h *Hub) broadcast(uids []string, f *pb.Frame) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := rdb.Publish(ctx, pushChannel, payload).Err(); err != nil {
+		// 跨进程下行是「发了就不管」的 Pub/Sub：发布失败意味着这批帧对其它进程的
+		// 在线连接永久丢失（消息能靠 seq 补拉，好友申请/群邀请这类事件不能），必须可见
+		metrics.Inc("im_pubsub_publish_errors_total")
 		log.Printf("[hub] 跨进程广播失败: %v", err)
 	}
 }

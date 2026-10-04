@@ -61,6 +61,17 @@ server_msg_id/seq；接收方断线重连后按「本地 max seq → 服务端�
 「发送失败，点击重试」。客户端侧还有一道兜底：发送后 10 秒未收到 ACK 自动标失败，
 重连成功后按 `client_msg_id` 自动补发所有未确认消息（服务端幂等去重，不会产生重复消息）。
 
+**可观测性**：三个进程都提供 `/healthz`（会 ping MySQL 与 Redis，异常返回 503）与
+`/metrics`（Prometheus 文本格式）。指标包括：在线连接数 `im_gateway_online_conns`、
+建连数 `im_ws_connections_total`、鉴权失败 `im_ws_auth_failures_total{reason}`、
+发送/拉取失败 `im_msg_send_errors_total{code}`、出站队列打满 `im_gateway_send_queue_full_total`、
+跨进程广播失败 `im_pubsub_publish_errors_total`、HTTP 请求分布 `im_http_requests_total{role,code}`，
+以及 `im_uptime_seconds` / `im_goroutines` / `im_memory_*`。
+compose 里三个服务都配了基于 `/healthz` 的 healthcheck —— `docker ps` 能直接看出实例是否健康。
+
+**构建版本可追溯**：镜像构建时 `--build-arg VERSION=$(git rev-parse --short HEAD)` 注入，
+进程启动会打印 `version=...`，`/healthz` 也会返回它。
+
 **账号状态与令牌撤销**：每个 HTTP 请求都会校验 `user_state`（是否封禁 + 令牌版本），
 不止登录和 WS 首帧 —— 否则封禁对 REST 形同虚设。校验结果缓存在 Redis（`im:ustate:<uid>`），
 管理后台封禁/启用/重置密码时**主动失效缓存**，因此是立即生效的；WS 连接由 gateway 每 10s
@@ -143,6 +154,9 @@ OIDC 的 `redirect_uri` 默认必须等于 `{base}/v1/oidc/{name}/callback`；�
 「站点配置」里改，落在数据库中，进程启动时读取。
 
 ## 测试
+
+CI（`.github/workflows/ci.yml`）在每次 push/PR 上跑：Go 构建 + vet + 单测、protoc 生成物与
+`im.proto` 的一致性、客户端编译与单元测试、服务端镜像构建。本地对应命令如下。
 
 ```bash
 cd server && go test ./...                 # 服务端单测（含协议 golden 校验）

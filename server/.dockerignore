@@ -1,0 +1,8 @@
+# 构建上下文是 server/，而 Dockerfile 里是 COPY . . ——
+# 不做排除的话，仓库里已入库的 60MB 二进制、日志、构建产物都会进构建上下文。
+bin/
+*.log
+.git/
+.gitignore
+.idea/
+*.iml

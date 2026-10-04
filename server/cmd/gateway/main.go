@@ -20,12 +20,17 @@ import (
 	"im/internal/auth"
 	"im/internal/call"
 	"im/internal/config"
+	"im/internal/health"
 	"im/internal/hub"
 	"im/internal/messaging"
+	"im/internal/metrics"
 	"im/internal/pb"
 	"im/internal/store"
 	"im/internal/userstate"
 )
+
+// version 构建版本，由 -ldflags "-X main.version=..." 注入（见 deploy/Dockerfile）
+var version = "dev"
 
 // defaultGatewayNodeID 单实例部署时的雪花节点号（多副本必须用 IM_NODE_ID 区分）
 const defaultGatewayNodeID = 1
@@ -75,6 +80,8 @@ func (c *conn) Send(f *pb.Frame) bool {
 	case c.sendq <- b:
 		return true
 	default:
+		// 队列满说明该客户端消费不过来：断开并计数（重连后会按 seq 补拉，不丢消息）
+		metrics.Inc("im_gateway_send_queue_full_total")
 		c.close()
 		return false
 	}
@@ -128,6 +135,7 @@ type server struct {
 
 func main() {
 	cfg := config.Load()
+	log.Printf("[gateway] version=%s", version)
 	if err := cfg.CheckSecrets(); err != nil {
 		log.Fatalf("[gateway] %v", err)
 	}
@@ -159,6 +167,12 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
+	// 探针与指标。注意：**不能**给 /ws 套 Instrument 中间件 ——
+	// 它包装 ResponseWriter 会让 http.Hijacker 失效，WebSocket upgrade 会直接失败。
+	mux.HandleFunc("GET /healthz", health.Handler("gateway", version, db, rdb))
+	mux.HandleFunc("GET /metrics", metrics.Handler())
+	// 在线连接数是采集时求值的 gauge：不做后台采样，也不会错过峰值
+	metrics.Gauge("im_gateway_online_conns", func() float64 { return float64(s.hub.OnlineCount()) })
 	// 在线数上报（管理后台统计用）
 	go func() {
 		for {
@@ -231,6 +245,7 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	metrics.Inc("im_ws_connections_total")
 	ws.SetReadLimit(maxFrameSize)
 	// 协议层 ping 的 pong 回包刷新读超时
 	ws.SetPongHandler(func(string) error {
@@ -269,6 +284,7 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			claims, err := auth.ParseToken(s.cfg.JWTSecret, ar.Token)
 			if err != nil {
+				metrics.Inc("im_ws_auth_failures_total", "reason", "unauthorized")
 				c.Send(&pb.Frame{Body: &pb.Frame_AuthResp{AuthResp: &pb.AuthResp{Ok: false, Reason: "unauthorized"}}})
 				return
 			}
@@ -280,10 +296,12 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if st.Disabled {
+				metrics.Inc("im_ws_auth_failures_total", "reason", "disabled")
 				c.Send(&pb.Frame{Body: &pb.Frame_AuthResp{AuthResp: &pb.AuthResp{Ok: false, Reason: "account disabled"}}})
 				return
 			}
 			if claims.Ver < st.TokenVersion {
+				metrics.Inc("im_ws_auth_failures_total", "reason", "revoked")
 				c.Send(&pb.Frame{Body: &pb.Frame_AuthResp{AuthResp: &pb.AuthResp{Ok: false, Reason: "token revoked"}}})
 				return
 			}
@@ -315,6 +333,7 @@ func (s *server) handleFrame(ctx context.Context, c *conn, f *pb.Frame) {
 		msgID, seq, err := s.msg.Send(ctx, c.uid, m)
 		if err != nil {
 			log.Printf("[gateway] send err: %v", err)
+			metrics.Inc("im_msg_send_errors_total", "code", errorCode(err))
 			// 必须回帧：否则客户端只能永远停在"发送中"，既不知道失败也不会重发
 			c.Send(errorFrame(m.ClientMsgId, errorCode(err), err.Error()))
 			return
@@ -328,6 +347,7 @@ func (s *server) handleFrame(ctx context.Context, c *conn, f *pb.Frame) {
 		resp, err := s.msg.Pull(ctx, c.uid, p.ConversationId, p.AfterSeq, p.Limit)
 		if err != nil {
 			log.Printf("[gateway] pull err: %v", err)
+			metrics.Inc("im_msg_pull_errors_total", "code", errorCode(err))
 			c.Send(errorFrame("", errorCode(err), err.Error()))
 			return
 		}

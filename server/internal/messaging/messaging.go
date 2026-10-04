@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"im/internal/hub"
+	"im/internal/metrics"
 	"im/internal/pb"
 	"im/internal/storage"
 )
@@ -255,6 +256,7 @@ func (s *Service) Send(ctx context.Context, fromUID string, m *pb.MsgSend) (stri
 			return "", 0, err
 		}
 		// stageMessage：seq 或 server_msg_id 冲突，重试重新取号 + 换 ID
+		metrics.Inc("im_msg_persist_retries_total")
 	}
 }
 

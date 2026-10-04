@@ -5,17 +5,29 @@
 # 不需要对外：9000/9001(MinIO) 10003(管理后台) —— 它们只绑 127.0.0.1，走 SSH 隧道或反代
 #
 # 用法：
-#   cp deploy/.env.example deploy/.env && 编辑 deploy/.env 填入随机密钥
-#   cd server && docker build -t im-server:latest -f deploy/Dockerfile . && cd ..
+#   cp deploy/.env.example deploy/.env && 编辑填入随机密钥
+#   cd server && docker build --build-arg VERSION=$(git rev-parse --short HEAD) \
+#       -t im-server:latest -f deploy/Dockerfile . && cd ..
 #   docker compose -f deploy/docker-compose.yml up -d
 #
-# 为什么密钥是 ${VAR:?} 必填：
-#   旧版本给所有密钥留了"开发期默认值"，照着 README 一键起的生产环境等于
-#   JWT 密钥/admin token/MinIO 口令全是公开已知值，任何人都能伪造登录、接管后台与对象存储。
-#   现在缺任何一个都直接拒绝启动，并在报错里写明缺哪个变量。
-#
-# 注意：coturn（deploy/turn）与 LiveKit 内嵌 TURN 争抢 3478/UDP，二选一；
-#       compose 默认用 LiveKit 内嵌的，独立 coturn 服务已注释掉。
+# 每个服务都带 /healthz 探针（会 ping MySQL 与 Redis），docker ps 里能直接看到健康状态；
+# /metrics 暴露 Prometheus 文本指标（在线连接数、发送失败、跨进程广播失败等）。
+
+x-logging: &default-logging
+  # 默认 json-file 不轮转，长时间运行会把宿主机磁盘写满
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-limits: &default-limits
+  # 单个服务打满内存时不要拖垮整台机器
+  resources:
+    limits:
+      cpus: "2.0"
+      memory: 1G
+    reservations:
+      memory: 128M
 
 services:
   mysql:
@@ -27,10 +39,15 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
-      # 用容器内的 MYSQL_ROOT_PASSWORD 变量，避免口令在 compose 里写第二遍（改一处漏一处）
       test: ["CMD-SHELL", "mysqladmin ping -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
       retries: 20
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
 
   redis:
     restart: unless-stopped
@@ -41,6 +58,12 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       retries: 20
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
 
   minio:
     restart: unless-stopped
@@ -55,6 +78,12 @@ services:
       - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
 
   livekit:
     restart: unless-stopped
@@ -67,6 +96,7 @@ services:
       LIVEKIT_KEYS: "${IM_LIVEKIT_API_KEY:?必须设置 IM_LIVEKIT_API_KEY}: ${IM_LIVEKIT_API_SECRET:?必须设置 IM_LIVEKIT_API_SECRET}"
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
+    logging: *default-logging
 
   # coturn 已改为使用 LiveKit 内嵌 TURN（见 livekit.yaml 的 turn 段）：
   # 内嵌实现与 LiveKit 凭证体系打通、客户端自动拿到 ICE server，且无需维护独立容器。
@@ -74,7 +104,6 @@ services:
   #   1) 注释掉 livekit.yaml 里的整段 turn；
   #   2) 取消下面 coturn 的注释，并把 turnserver.conf 的 external-ip 改成你的公网 IP；
   #   3) 在 livekit.yaml 的 rtc 段补 turn_servers 指向该 coturn。
-  #
   # coturn:
   #   restart: unless-stopped
   #   image: coturn/coturn:latest
@@ -105,14 +134,22 @@ services:
       IM_NODE_ID: ${IM_LOGIC_NODE_ID:-2}
     ports:
       - "10002:10002"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:10002/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
-      # 只等容器起来，不等 healthcheck：对象存储的就绪由 logic 启动时的重试窗口兜底
+      # 只等容器起来，不等 healthcheck：对象存储的就绪由 logic 启动时的后台重试兜底
       minio:
         condition: service_started
+    logging: *default-logging
+    deploy: *default-limits
 
   admin:
     restart: unless-stopped
@@ -131,11 +168,19 @@ services:
     ports:
       # 管理后台能重置任意用户密码、改站点配置，默认只绑本机
       - "127.0.0.1:10003:10003"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:10003/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+    logging: *default-logging
+    deploy: *default-limits
 
   gateway:
     restart: unless-stopped
@@ -153,11 +198,19 @@ services:
       IM_NODE_ID: ${IM_GATEWAY_NODE_ID:-1}
     ports:
       - "10001:10001"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:10001/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+    logging: *default-logging
+    deploy: *default-limits
 
 volumes:
   mysql-data:

@@ -17,8 +17,10 @@ import (
 	"github.com/redis/go-redis/v9"
 	"im/internal/auth"
 	"im/internal/config"
+	"im/internal/health"
 	"im/internal/hub"
 	"im/internal/messaging"
+	"im/internal/metrics"
 	"im/internal/migrate"
 	"im/internal/siteconf"
 	"im/internal/storage"
@@ -38,11 +40,15 @@ type apiv1 struct {
 
 var yidRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{4,19}$`)
 
+// version 构建版本，由 -ldflags "-X main.version=..." 注入（见 deploy/Dockerfile）
+var version = "dev"
+
 // defaultLogicNodeID 单实例部署时的雪花节点号（多副本必须用 IM_NODE_ID 区分）
 const defaultLogicNodeID = 2
 
 func main() {
 	cfg := config.Load()
+	log.Printf("[logic] version=%s", version)
 	if err := cfg.CheckSecrets(); err != nil {
 		log.Fatalf("[logic] %v", err)
 	}
@@ -125,8 +131,12 @@ func main() {
 	mux.Handle("POST /v1/conversations/{id}/members", a.authed(a.addMembersEnhanced))
 	mux.Handle("PUT /v1/me/avatar", a.authed(a.setAvatar))
 
+	// 探针与指标：编排系统据此判断能否摘流量，运维据此看请求分布
+	mux.HandleFunc("GET /healthz", health.Handler("logic", version, sqldb, rdb))
+	mux.HandleFunc("GET /metrics", metrics.Handler())
+
 	log.Printf("[logic] listening on %s", cfg.LogicAddr)
-	log.Fatal(http.ListenAndServe(cfg.LogicAddr, cors(cfg, mux)))
+	log.Fatal(http.ListenAndServe(cfg.LogicAddr, metrics.Instrument("logic", cors(cfg, mux))))
 }
 
 // cors 允许 Web 端跨源调用（私有化部署场景，浏览器客户端与 API 常不同源）。

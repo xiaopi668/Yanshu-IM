@@ -1,0 +1,90 @@
+name: CI
+
+# 之前仓库没有任何 CI：协议漂移、格式化、客户端编译失败都只能靠人工发现。
+# 这里把本地验证过的命令固化下来（Go 构建/vet/测试、protoc 生成物一致性、客户端编译与单测）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: 格式检查
+        working-directory: server
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未 gofmt 格式化："
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: 构建与静态检查
+        working-directory: server
+        run: |
+          go build ./...
+          go vet ./...
+          go vet -tags smoke ./...
+      - name: 单元测试（含协议 golden 双端一致性）
+        working-directory: server
+        run: go test ./...
+
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "36.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: 安装 protoc-gen-go
+        run: go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+      - name: 校验生成物与 im.proto 一致
+        working-directory: proto
+        run: |
+          protoc --go_out=../server/internal/pb --go_opt=paths=source_relative -I. im.proto
+          cd ..
+          git diff --exit-code -- server/internal/pb proto/golden
+
+  client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: 编译（desktop + compose）
+        working-directory: client
+        run: ./gradlew --no-daemon :shared:compileKotlinDesktop :composeApp:compileKotlinDesktop
+      - name: 单元测试与协议 golden
+        working-directory: client
+        # E2E（ImClientE2eTest / Phase2E2eTest / Phase3E2eTest）需要真实的
+        # MySQL/Redis + logic/gateway，因此这里只跑不依赖服务端的用例。
+        run: |
+          ./gradlew --no-daemon :shared:desktopTest \
+            --tests 'im.client.proto.*' \
+            --tests 'im.client.store.*' \
+            --tests 'im.client.net.*'
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 构建服务端镜像
+        run: |
+          docker build \
+            --build-arg VERSION=$(git rev-parse --short HEAD) \
+            -t im-server:ci \
+            -f server/deploy/Dockerfile server

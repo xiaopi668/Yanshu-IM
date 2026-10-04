@@ -19,6 +19,8 @@ import (
 	"im/internal/archive"
 	"im/internal/auth"
 	"im/internal/config"
+	"im/internal/health"
+	"im/internal/metrics"
 	"im/internal/migrate"
 	"im/internal/siteconf"
 	"im/internal/storage"
@@ -28,6 +30,9 @@ import (
 
 //go:embed admin.html
 var adminHTML []byte
+
+// version 构建版本，由 -ldflags "-X main.version=..." 注入（见 deploy/Dockerfile）
+var version = "dev"
 
 type admin struct {
 	cfg *config.Config
@@ -39,6 +44,7 @@ type admin struct {
 
 func main() {
 	cfg := config.Load()
+	log.Printf("[admin] version=%s", version)
 	if err := cfg.CheckSecrets(); err != nil {
 		log.Fatalf("[admin] %v", err)
 	}
@@ -71,7 +77,11 @@ func main() {
 	a.admined(mux, "PUT /admin/site-config", a.putSiteConfig)
 
 	log.Printf("[admin] listening on %s", cfg.AdminAddr)
-	log.Fatal(http.ListenAndServe(cfg.AdminAddr, cors(cfg, mux)))
+	// 探针与指标
+	mux.HandleFunc("GET /healthz", health.Handler("admin", version, sqldb, rdb))
+	mux.HandleFunc("GET /metrics", metrics.Handler())
+
+	log.Fatal(http.ListenAndServe(cfg.AdminAddr, metrics.Instrument("admin", cors(cfg, mux))))
 }
 
 func (a *admin) login(w http.ResponseWriter, r *http.Request) {
