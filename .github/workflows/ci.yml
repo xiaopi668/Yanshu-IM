@@ -111,8 +111,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: 构建 debug APK
         working-directory: client
-        # 注意：这里**要**保留 ANDROID_HOME（setup-android 已设置），
-        # 构建脚本才会启用 androidTarget（见 gradle.properties 里的 AGP 兼容开关）
+        # 注意：这里**要**保留 ANDROID_HOME（runner 自带 SDK 已导出），
+        # 构建脚本才会启用 androidTarget（见 gradle.properties 里的 AGP 兼容开关）；
+        # client / e2e 两个 job 则相反，会显式 unset 它，只验证 desktop
         run: ./gradlew --no-daemon :composeApp:assembleDebug
       - name: 上传 APK
         uses: actions/upload-artifact@v4
