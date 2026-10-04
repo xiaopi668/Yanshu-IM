@@ -37,6 +37,10 @@ services:
     image: mysql:8.4
     environment:
       MYSQL_ROOT_PASSWORD: ${IM_MYSQL_ROOT_PASSWORD:?必须设置 IM_MYSQL_ROOT_PASSWORD（数据库 root 口令）}
+      # 建库必须由 root 完成：应用账号 im 只有 im 库内的权限，建不了库。
+      # 少了这一行，全新部署时库不存在，应用账号执行 schema.sql 会在第一行
+      # CREATE DATABASE 处被拒、mysql 读取文件时直接中止 —— 一张表都不会建。
+      MYSQL_DATABASE: im
       # 仅用于初始化脚本创建最小权限应用账号
       IM_APP_PASSWORD: ${IM_APP_PASSWORD:?必须设置 IM_APP_PASSWORD（应用库账号口令）}
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci

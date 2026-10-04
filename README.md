@@ -155,6 +155,7 @@ CI 的 `android` job 会自动装好这些，并把 APK 作为 artifact 上传�
 docker compose -f deploy/docker-compose.yml exec mysql sh -c '
   mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "
     CREATE USER IF NOT EXISTS '"'"'im'"'"'@'"'"'%'"'"' IDENTIFIED BY '"'"'<第 1 步生成的 IM_APP_PASSWORD>'"'"';
+    ALTER USER '"'"'im'"'"'@'"'"'%'"'"' IDENTIFIED BY '"'"'<第 1 步生成的 IM_APP_PASSWORD>'"'"';
     GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, REFERENCES ON im.* TO '"'"'im'"'"'@'"'"'%'"'"';
     FLUSH PRIVILEGES;"'
 
@@ -163,6 +164,14 @@ docker compose -f deploy/docker-compose.yml up -d
 ```
 
 > 全新部署不需要这步：mysql 容器首次初始化时会自动执行 `deploy/init/01-create-app-user.sh`。
+>
+> 这条命令**可以重复执行**：里面除了 `CREATE USER IF NOT EXISTS` 还有一条 `ALTER USER`，
+> 所以改了 `IM_APP_PASSWORD` 之后再跑一次，库里的口令会同步更新。
+> 没有那条 `ALTER` 的话，`CREATE USER IF NOT EXISTS` 对已存在的账号是静默空操作，
+> 口令不会变，应用连不上库且没有任何提示 —— 这是升级时最容易踩的坑。
+>
+> 若容器启动时报 `Access denied`：入口脚本会在重试 30 秒后直接退出并打印该提示，
+> 按上面的建号步骤处理即可（不会像以前那样无声无息地一直卡在 unhealthy）。
 
 ## 服务端配置
 

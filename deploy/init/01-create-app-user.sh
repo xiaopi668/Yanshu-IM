@@ -10,7 +10,13 @@
 set -e
 
 mysql -uroot -p"$MYSQL_ROOT_PASSWORD" <<SQL
+-- 建库同样只能由 root 做（应用账号只有 im 库内的权限）
+CREATE DATABASE IF NOT EXISTS im DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS 'im'@'%' IDENTIFIED BY '${IM_APP_PASSWORD}';
+-- 关键：CREATE USER IF NOT EXISTS 对已存在的账号是**静默空操作**，
+-- IDENTIFIED BY 会被忽略。手工重跑本脚本（或改了 IM_APP_PASSWORD）时，
+-- 只有这句 ALTER 才能把口令改成当前值 —— 否则应用会一直 Access denied，且没有任何提示。
+ALTER USER 'im'@'%' IDENTIFIED BY '${IM_APP_PASSWORD}';
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, REFERENCES ON im.* TO 'im'@'%';
 FLUSH PRIVILEGES;
 SQL
