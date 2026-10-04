@@ -20,6 +20,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import im.client.api.ContactRequestResp
 import im.client.api.ContactResp
 import im.client.api.MomentResp
@@ -91,11 +92,37 @@ fun ContactsView(client: ImClient, onOpenChat: (peerUid: String) -> Unit) {
                     )
                 }
                 items(requests.filter { it.status == "pending" }, key = { it.id }) { req ->
-                    Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                    Card(
+                        Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                    ) {
                         Column(Modifier.padding(12.dp)) {
-                            Text("${req.nickname} (${req.yid})", fontWeight = FontWeight.SemiBold)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Avatar(req.nickname.ifEmpty { req.yid }, size = 36.dp, round = true)
+                                Spacer(Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        req.nickname.ifEmpty { req.yid },
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        req.yid,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                             if (req.message.isNotBlank()) {
-                                Text(req.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    req.message,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 6.dp),
+                                )
                             }
                             Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(onClick = {
@@ -113,24 +140,36 @@ fun ContactsView(client: ImClient, onOpenChat: (peerUid: String) -> Unit) {
             item {
                 Text(
                     "通讯录 (${contacts.size})",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 6.dp),
                 )
+            }
+            if (contacts.isEmpty()) {
+                item { EmptyHint("通讯录还是空的，用上面的雁书号加个好友吧") }
             }
             items(contacts, key = { it.uid }) { c ->
                 var menuOpen by remember { mutableStateOf(false) }
                 var editRemark by remember { mutableStateOf(false) }
                 var confirmDelete by remember { mutableStateOf(false) }
+                val name = c.remark.ifEmpty { c.nickname }
                 Row(
                     Modifier.fillMaxWidth().clickable {
                         onOpenChat(c.uid)
-                    }.padding(horizontal = 16.dp, vertical = 12.dp),
+                    }.padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Avatar(name, size = 40.dp, round = true)
+                    Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(c.remark.ifEmpty { c.nickname }, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "雁书号: ${c.yid.ifEmpty { "-" }}",
+                            name,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "雁书号 ${c.yid.ifEmpty { "-" }}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -276,9 +315,10 @@ fun MomentCard(client: ImClient, moment: im.client.api.MomentResp, onChanged: ()
                     cells.chunked(3).forEach { rowImages ->
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             rowImages.forEach { key ->
-                                val url = client.api.downloadUrl(client.myToken, key)
                                 NetImage(
-                                    url = url,
+                                    api = client.api,
+                                    token = client.myToken,
+                                    key = key,
                                     modifier = Modifier.size(96.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
                                 )
                             }
@@ -407,13 +447,16 @@ fun MomentComposer(client: ImClient, onDone: () -> Unit) {
     )
 }
 
-// 简易网络图片（字节加载 → ImageBitmap）
+// 简易网络图片（字节加载 → ImageBitmap）。
+// key 是对象存储里的 key；地址在渲染时用调用方自己的登录态换短时票据得到，
+// 因此登录 JWT 不会出现在任何会被保存/分享的 URL 里。
 @Composable
-fun NetImage(url: String, modifier: Modifier = Modifier) {
-    var bmp by remember(url) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-    var failed by remember(url) { mutableStateOf(false) }
-    LaunchedEffect(url) {
+fun NetImage(api: im.client.api.Api, token: String, key: String, modifier: Modifier = Modifier) {
+    var bmp by remember(key) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var failed by remember(key) { mutableStateOf(false) }
+    LaunchedEffect(key) {
         try {
+            val url = api.attachmentUrl(token, key)
             val (code, data) = im.client.api.Http.getBinary(url)
             if (code in 200..299) {
                 bmp = org.jetbrains.skia.Image.makeFromEncoded(data).toComposeImageBitmap()
@@ -453,7 +496,7 @@ internal fun scopeLaunchOpenSingle(client: ImClient, peerUid: String, onDone: (i
 }
 
 
-internal fun momentTimeOf(ms: Long): String = "#$ms"
+internal fun momentTimeOf(ms: Long): String = im.client.formatChatTime(ms)
 
 // ============ 个人资料 ============
 
@@ -477,7 +520,7 @@ fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
             avatarKey = me.avatar
         } catch (_: Throwable) {}
     }
-    val avatarUrl = if (avatarKey.isBlank()) null else client.api.downloadUrl(client.myToken, avatarKey)
+    val avatarKeyOrNull = avatarKey.ifBlank { null }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -485,8 +528,13 @@ fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
         text = {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
                 // 头像
-                if (avatarUrl != null) {
-                    NetImage(url = avatarUrl, modifier = Modifier.size(64.dp).clip(RoundedCornerShape(32.dp)))
+                if (avatarKeyOrNull != null) {
+                    NetImage(
+                        api = client.api,
+                        token = client.myToken,
+                        key = avatarKeyOrNull,
+                        modifier = Modifier.size(64.dp).clip(RoundedCornerShape(32.dp)),
+                    )
                 } else {
                     Box(
                         Modifier.size(64.dp).clip(RoundedCornerShape(32.dp)).background(MaterialTheme.colorScheme.primaryContainer),
@@ -503,17 +551,43 @@ fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
                         } catch (e: Throwable) { msg = e.message }
                     }
                 }) { Text("更换头像") }
-                Spacer(Modifier.height(4.dp))
-                Text("用户名：$username", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("雁书号：$yid", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (!yidChanged) {
-                    Text("可修改一次", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(nickname, { nickname = it }, label = { Text("昵称") }, singleLine = true)
+                // 昵称 / 用户名 / 雁书号 三个都可编辑（雁书号只放一次，由服务端 yid_changed 把关）
+                OutlinedTextField(
+                    nickname, { nickname = it },
+                    label = { Text("昵称") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    username, { username = it },
+                    label = { Text("用户名（登录用）") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
                 if (!yidChanged) {
-                    Spacer(Modifier.height(4.dp))
-                    OutlinedTextField(yid, { yid = it }, label = { Text("新雁书号") }, singleLine = true)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        yid, { yid = it },
+                        label = { Text("雁书号") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        "雁书号只能修改一次",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "雁书号：$yid",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "已使用",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 msg?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall) }
             }
@@ -523,8 +597,9 @@ fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
                 onClick = {
                     scope.launch {
                         try {
-                            client.api.updateNickname(client.myToken, nickname.trim())
-                            if (!yidChanged && yid != "") {
+                            client.api.updateProfile(client.myToken, nickname.trim(), username.trim())
+                            client.setNickname(nickname.trim())
+                            if (!yidChanged && yid.trim().isNotEmpty()) {
                                 client.api.changeYid(client.myToken, yid.trim())
                                 yidChanged = true
                             }

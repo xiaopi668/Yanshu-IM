@@ -33,13 +33,23 @@ data class Msg(
     // 客户端侧状态
     val clientMsgId: String? = null,
     val sending: Boolean = false,
+    /** 上行失败或 ACK 超时：UI 显示"发送失败，点击重试"，可安全重发（服务端按 client_msg_id 幂等） */
+    val failed: Boolean = false,
 )
 
 data class AuthRespData(val ok: Boolean, val reason: String?, val maxSeqs: Map<String, Long>)
 
 data class PullRespData(val conversationId: String, val msgs: List<Msg>, val hasMore: Boolean, val maxSeq: Long)
 
-// Frame 字段号：1 heartbeat, 2 auth_req, 3 auth_resp, 4 msg_send, 5 msg_ack, 6 msg_notify, 7 pull_req, 8 pull_resp, 9 msg_read, 10 call_signal
+// Frame 字段号：1 heartbeat, 2 auth_req, 3 auth_resp, 4 msg_send, 5 msg_ack, 6 msg_notify,
+//               7 pull_req, 8 pull_resp, 9 msg_read, 10 call_signal, 11 contact_event, 12 error
+
+/** 服务端失败应答（Frame field 12）。客户端只应依赖 code，message 仅用于展示。 */
+data class ErrorData(
+    val refClientMsgId: String = "",
+    val code: String = "",
+    val message: String = "",
+)
 
 enum class CallEventType(val v: Int) {
     Invite(0), Accept(1), Reject(2), Cancel(3), Hangup(4), Timeout(5), Busy(6);
@@ -123,6 +133,7 @@ object Frames {
             f[8]?.firstOrNull()?.bytes?.let { return FrameKind.MsgPullResp(decodePullResp(it)) }
             f[11]?.firstOrNull()?.bytes?.let { return FrameKind.ContactEventFrame(decodeContactEvent(it)) }
             f[10]?.firstOrNull()?.bytes?.let { return FrameKind.CallSignalFrame(decodeCallSignal(it)) }
+            f[12]?.firstOrNull()?.bytes?.let { return FrameKind.ErrorFrame(decodeError(it)) }
             return FrameKind.Unknown
         } catch (e: ProtoDecodeException) {
             return null
@@ -210,6 +221,7 @@ sealed class FrameKind {
     data class MsgPullResp(val resp: PullRespData) : FrameKind()
     data class CallSignalFrame(val data: CallSignalData) : FrameKind()
     data class ContactEventFrame(val data: ContactEventData) : FrameKind()
+    data class ErrorFrame(val data: ErrorData) : FrameKind()
     object Unknown : FrameKind()
 }
 
@@ -247,6 +259,16 @@ data class ContactEventData(
     val nickname: String = "",
     val message: String = "",
 )
+
+// Error（Frame field 12）：失败应答
+fun Frames.decodeError(bytes: ByteArray): ErrorData {
+    val e = ProtoReader(bytes).readAll()
+    return ErrorData(
+        refClientMsgId = e.firstString(1) ?: "",
+        code = e.firstString(2) ?: "",
+        message = e.firstString(3) ?: "",
+    )
+}
 
 fun Frames.decodeContactEvent(bytes: ByteArray): ContactEventData {
     val s = ProtoReader(bytes).readAll()

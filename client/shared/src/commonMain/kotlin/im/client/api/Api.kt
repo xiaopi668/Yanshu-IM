@@ -87,8 +87,16 @@ class Api(private val baseUrl: String) {
         return cred["key"]!!
     }
 
-    /** 下载地址（经 logic 预签名重定向） */
-    fun downloadUrl(token: String, key: String): String = "$baseUrl/v1/download?key=$key&token=$token"
+    /**
+     * 申请附件的短时下载地址：票据由服务端签发、与单个对象 key 绑定、10 分钟过期。
+     *
+     * 注意不要把登录 token 拼进这个地址 —— 它会被写进消息体的 Attachment.url，
+     * 随 MsgNotify 广播给会话全部成员并永久落库，等于把 7 天有效的账号凭证发给所有人。
+     */
+    suspend fun attachmentUrl(token: String, key: String): String =
+        request<Map<String, String>>(
+            "POST", "/v1/attachments/ticket", json.encodeToString(mapOf("key" to key)), token,
+        )["url"] ?: ""
 
     suspend inline fun <reified T> request(method: String, path: String, body: String?, token: String? = null): T {
         val text = rawRequest(method, path, body, token)
@@ -223,8 +231,9 @@ class Api(private val baseUrl: String) {
             json.encodeToString(mapOf("uid" to uid, "role" to role)), token)
     }
 
-    suspend fun updateNickname(token: String, nickname: String) {
-        val body = json.encodeToString(mapOf("nickname" to nickname))
+    /** 昵称 + 用户名一起提交（服务端两者都传就都改，只传一个也允许） */
+    suspend fun updateProfile(token: String, nickname: String, username: String) {
+        val body = json.encodeToString(mapOf("nickname" to nickname, "username" to username))
         request<Map<String, Boolean>>("PUT", "/v1/me", body, token)
     }
 

@@ -31,6 +31,13 @@ sealed class ConnState {
     data object Authenticated : ConnState()
 }
 
+/**
+ * 连接不可用（未连接/正在重连）。
+ * 单独定义成异常类型，是为了让发送方能明确区分"没发出去"和"发出去了但服务端拒绝"，
+ * 前者可以自动重发，后者要变成失败态让用户决定。
+ */
+class NotConnectedException : Exception("connection not available")
+
 class ImConnection(private val gatewayWsUrl: String) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -54,6 +61,10 @@ class ImConnection(private val gatewayWsUrl: String) {
 
     private val _contactEvents = MutableSharedFlow<im.client.proto.ContactEventData>(extraBufferCapacity = 64)
     val contactEvents: SharedFlow<im.client.proto.ContactEventData> = _contactEvents
+
+    /** 服务端失败应答（Frame field 12）：失败必须可见，不能只写服务端日志 */
+    private val _errors = MutableSharedFlow<im.client.proto.ErrorData>(extraBufferCapacity = 64)
+    val errors: SharedFlow<im.client.proto.ErrorData> = _errors
 
     private var token: String? = null
     private var deviceId: String = Random.nextLong().toString(16)
@@ -97,25 +108,34 @@ class ImConnection(private val gatewayWsUrl: String) {
     }
 
     suspend fun pull(conversationId: String, afterSeq: Long, limit: Int = 200) {
-        send(Frames.pullReq(conversationId, afterSeq, limit))
+        // 控制帧失败不上抛：这里的调用方是 SharedFlow 的收集协程，
+        // 抛出去会把收集器整个打死（之后再也收不到任何帧）。断线重连后会重新拉补。
+        runCatching { send(Frames.pullReq(conversationId, afterSeq, limit)) }
     }
 
     suspend fun markRead(conversationId: String, upToSeq: Long) {
-        send(Frames.msgRead(conversationId, upToSeq))
+        runCatching { send(Frames.msgRead(conversationId, upToSeq)) }
     }
 
-    /** 通话信令上行 */
+    /**
+     * 通话信令上行。未连接/写失败时不上抛：
+     * 调用方（CallController）是一堆裸 scope.launch，抛出去会变成未捕获异常
+     * （Android 上会崩进程）。信令本身的失败已有本地兜底（65s 响铃超时、本地状态机）。
+     */
     suspend fun sendCallSignal(data: im.client.proto.CallSignalData) {
-        send(callSignal(data))
+        runCatching { send(callSignal(data)) }
     }
 
     suspend fun heartbeat() {
-        send(Frames.heartbeat())
+        runCatching { send(Frames.heartbeat()) }
     }
 
-    /** 发送失败视为连接已死：关掉会话，由会话结束逻辑触发重连 */
+    /**
+     * 上行发送。未连接时抛 [NotConnectedException]（而不是静默返回）：
+     * 静默返回会让调用方以为已经发出去了，消息永远停在"发送中"且不会被重发。
+     */
     private suspend fun send(bytes: ByteArray) {
-        val socket = ws ?: return
+        val socket = ws ?: throw NotConnectedException()
         try {
             socket.send(bytes)
         } catch (e: CancellationException) {
@@ -172,6 +192,7 @@ class ImConnection(private val gatewayWsUrl: String) {
             is FrameKind.MsgPullResp -> _pullResps.tryEmit(kind.resp)
             is FrameKind.CallSignalFrame -> _callSignals.tryEmit(kind.data)
             is FrameKind.ContactEventFrame -> _contactEvents.tryEmit(kind.data)
+            is FrameKind.ErrorFrame -> _errors.tryEmit(kind.data)
             else -> {}
         }
     }

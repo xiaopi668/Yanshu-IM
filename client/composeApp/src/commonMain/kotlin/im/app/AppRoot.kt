@@ -1,6 +1,7 @@
 package im.app
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -13,10 +14,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import im.client.ImClient
+import im.client.auth.SavedSession
+import im.client.auth.clearSession
+import im.client.auth.loadSession
+import im.client.auth.saveSession
 import im.client.net.ConnState
 import im.client.proto.Msg
 import im.client.proto.MsgType
@@ -26,6 +33,7 @@ import im.client.openUrl
 import im.client.registerTurnstileCallback
 import im.client.renderTurnstileWidget
 import im.client.wireCallbacks
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -35,11 +43,61 @@ internal var DEFAULT_WS = "ws://127.0.0.1:10001/ws"
 
 @Composable
 fun AppRoot() {
-    MaterialTheme {
-        Surface(Modifier.fillMaxSize()) {
+    YanshuTheme {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             var client by remember { mutableStateOf<ImClient?>(null) }
-            if (client == null) LoginScreen(onLoggedIn = { client = it })
-            else MainScreen(client!!)
+            // 恢复会话期间先出启动画面，避免闪一下登录页
+            var restoring by remember { mutableStateOf(true) }
+
+            // 用本地存的 token 直接恢复登录 —— 桌面/Android 重启、Web 刷新都不该掉线
+            LaunchedEffect(Unit) {
+                val saved = loadSession()
+                if (saved != null && saved.token.isNotEmpty() && saved.apiBase.isNotEmpty()) {
+                    try {
+                        val c = ImClient(saved.apiBase, saved.wsBase)
+                        c.wireCallbacks()
+                        c.loginWithToken(saved.token)
+                        c.startSession()
+                        client = c
+                    } catch (e: Throwable) {
+                        val m = e.message ?: ""
+                        // 只有明确的鉴权失败才丢弃会话；网络抖动时保留，下次启动还能恢复
+                        if (m.contains("401") || m.contains("403") || m.contains("404")) clearSession()
+                    }
+                }
+                restoring = false
+            }
+
+            when {
+                restoring -> SplashScreen()
+                client == null -> LoginScreen(onLoggedIn = { client = it })
+                else -> MainScreen(
+                    client!!,
+                    onLogout = {
+                        clearSession()
+                        client!!.stop()
+                        client = null
+                    },
+                )
+            }
+        }
+    }
+}
+
+/** 启动画面：会话恢复完成前占位 */
+@Composable
+private fun SplashScreen() {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(
+                Modifier.size(56.dp).background(
+                    MaterialTheme.colorScheme.primary,
+                    androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                ),
+                contentAlignment = Alignment.Center,
+            ) { Text("雁", color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.headlineSmall) }
+            Spacer(Modifier.height(16.dp))
+            Text("正在恢复登录状态…", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         }
     }
 }
@@ -58,158 +116,6 @@ data class SiteConfigResp(
 @kotlinx.serialization.Serializable
 data class OidcProviderInfo(val name: String, val authorize_url: String)
 
-@Composable
-fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
-    var apiBase by remember { mutableStateOf(DEFAULT_API) }
-    var wsBase by remember { mutableStateOf(DEFAULT_WS) }
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var email by remember { mutableStateOf("") }
-    var emailCode by remember { mutableStateOf("") }
-    var mode by remember { mutableStateOf("login") } // login / register
-    var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var siteCfg by remember { mutableStateOf<SiteConfigResp?>(null) }
-    var turnstileToken by remember { mutableStateOf("") }
-    val scope = rememberCoroutineScope()
-
-    LaunchedEffect(Unit) {
-        try {
-            val cfg = apiSiteConfig(apiBase)
-            siteCfg = cfg
-            if (!cfg.registration_enabled) mode = "login"
-            if (cfg.turnstile_enabled && cfg.turnstile_site_key.isNotEmpty()) {
-                registerTurnstileCallback { turnstileToken = it }
-                renderTurnstileWidget(cfg.turnstile_site_key, "turnstile-box")
-            }
-        } catch (_: Throwable) {}
-    }
-
-    Column(
-        Modifier.fillMaxSize().padding(32.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text("雁书 · 登录", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(24.dp))
-        OutlinedTextField(apiBase, { apiBase = it }, label = { Text("API 地址") }, modifier = Modifier.fillMaxWidth(0.6f))
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(wsBase, { wsBase = it }, label = { Text("WS 地址") }, modifier = Modifier.fillMaxWidth(0.6f))
-        Spacer(Modifier.height(16.dp))
-        OutlinedTextField(username, { username = it }, label = { Text("用户名 / 雁书号") }, singleLine = true, modifier = Modifier.fillMaxWidth(0.6f))
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(password, { password = it }, label = { Text("密码") }, singleLine = true, modifier = Modifier.fillMaxWidth(0.6f))
-        // 注册模式 + 邮箱验证码开启：显示邮箱与验证码
-        if (mode == "register" && (siteCfg?.email_code_enabled == true)) {
-            Spacer(Modifier.height(8.dp))
-            Row(modifier = Modifier.fillMaxWidth(0.6f), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(email, { email = it }, label = { Text("邮箱") }, singleLine = true, modifier = Modifier.weight(1f))
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(enabled = email.contains("@"), onClick = {
-                    scope.launch {
-                        try {
-                            val ok = apiSendEmailCode(apiBase, email, turnstileToken)
-                            if (ok) error = "验证码已发送（5 分钟内有效）"
-                        } catch (e: Throwable) { error = e.message ?: e.toString() }
-                    }
-                }) { Text("发送验证码") }
-            }
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(emailCode, { emailCode = it }, label = { Text("邮箱验证码") }, singleLine = true, modifier = Modifier.fillMaxWidth(0.6f))
-        }
-        // Turnstile 小组件容器（Web 端渲染）
-        if (siteCfg?.turnstile_enabled == true && siteCfg?.turnstile_site_key?.isNotEmpty() == true) {
-            Spacer(Modifier.height(12.dp))
-            Box(
-                Modifier.fillMaxWidth(0.6f).height(70.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (turnstileToken.isNotEmpty()) {
-                    Text("✓ 人机验证通过", color = Color(0xFF2E7D32), style = MaterialTheme.typography.labelSmall)
-                } else {
-                    Text("人机验证加载中（仅 Web 端支持，桌面端请暂时关闭该验证）", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
-                }
-            }
-        }
-        error?.let {
-            Spacer(Modifier.height(8.dp))
-            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-        }
-        Spacer(Modifier.height(20.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(
-                enabled = !busy,
-                onClick = {
-                    busy = true; error = null
-                    scope.launch {
-                        try {
-                            val client = ImClient(apiBase.trimEnd('/'), wsBase)
-                            client.wireCallbacks()
-                            client.login(username, password)
-                            client.startSession()
-                            onLoggedIn(client)
-                        } catch (e: Throwable) {
-                            error = e.message ?: e.toString()
-                        }
-                        busy = false
-                    }
-                },
-            ) { Text(if (busy) "登录中…" else "登录") }
-            if (siteCfg?.registration_enabled != false) {
-                OutlinedButton(
-                    enabled = !busy,
-                    onClick = {
-                        busy = true; error = null
-                        scope.launch {
-                            try {
-                                val client = ImClient(apiBase.trimEnd('/'), wsBase)
-                                client.wireCallbacks()
-                                client.register(username, password, username, "", email, emailCode, turnstileToken)
-                                client.login(username, password)
-                                client.startSession()
-                                onLoggedIn(client)
-                            } catch (e: Throwable) {
-                                error = e.message ?: e.toString()
-                            }
-                            busy = false
-                        }
-                    },
-                ) { Text("注册并登录") }
-            }
-        }
-        // OIDC 提供商按钮
-        siteCfg?.oidc_providers?.takeIf { it.isNotEmpty() }?.let { providers ->
-            Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                providers.forEach { p ->
-                    OutlinedButton(onClick = { openUrl(p.authorize_url) }) { Text("使用 ${p.name} 登录") }
-                }
-            }
-            Text(
-                "OIDC 登录后从回调页复制 Token，在下方粘贴完成登录",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.Gray,
-            )
-            var oidcToken by remember { mutableStateOf("") }
-            OutlinedTextField(oidcToken, { oidcToken = it }, label = { Text("OIDC Token") }, singleLine = true, modifier = Modifier.fillMaxWidth(0.6f))
-            TextButton(
-                enabled = oidcToken.isNotBlank(),
-                onClick = {
-                    scope.launch {
-                        try {
-                            // token -> uid：me 接口解析
-                            val client = ImClient(apiBase.trimEnd('/'), wsBase)
-                            client.wireCallbacks()
-                            val uid = client.loginWithToken(oidcToken)
-                            client.startSession()
-                            onLoggedIn(client)
-                        } catch (e: Throwable) { error = e.message ?: e.toString() }
-                    }
-                },
-            ) { Text("完成 OIDC 登录") }
-        }
-    }
-}
 
 /** 拉 site-config（不走 token） */
 suspend fun apiSiteConfig(apiBase: String): SiteConfigResp {
@@ -227,7 +133,7 @@ suspend fun apiSendEmailCode(apiBase: String, email: String, turnstileToken: Str
 // ---------- 主界面 ----------
 
 @Composable
-fun MainScreen(client: ImClient) {
+fun MainScreen(client: ImClient, onLogout: () -> Unit) {
     var selected by remember { mutableStateOf<Conversation?>(null) }
     val state by client.connectionState.collectAsState()
     val callState by client.callController.uiState.collectAsState()
@@ -249,71 +155,94 @@ fun MainScreen(client: ImClient) {
 
     Box(Modifier.fillMaxSize()) {
     Row(Modifier.fillMaxSize()) {
-        Column(Modifier.width(280.dp).fillMaxHeight()) {
-            Row(
-                Modifier.fillMaxWidth().padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    client.myNickname.ifEmpty { client.myUid.takeLast(6) },
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clickable { showProfile = true },
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    when (state) {
-                        is ConnState.Authenticated -> "在线"
-                        is ConnState.Connecting -> "连接中"
-                        else -> "离线"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (state is ConnState.Authenticated) Color(0xFF2E7D32) else Color.Gray,
-                )
-                Spacer(Modifier.width(8.dp))
-                TextButton(onClick = { client.stop() }) { Text("退出") }
-            }
-            HorizontalDivider()
-            // 视图切换：聊天 / 通讯录 / 朋友圈
-            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
-                listOf("chat" to "聊天", "contacts" to "通讯录", "moments" to "朋友圈").forEach { (id, label) ->
-                    FilterChip(
-                        selected = tab == id,
-                        onClick = {
-                            tab = id
-                            if (id != "chat") selected = null
-                        },
-                        label = { Text(label) },
-                        modifier = Modifier.weight(1f),
+        // 左侧栏
+        Surface(
+            modifier = Modifier.width(300.dp).fillMaxHeight(),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                // 当前用户：头像 + 昵称 + 连接状态，点击进资料；右侧退出
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Avatar(
+                        client.myNickname.ifEmpty { client.myUid.takeLast(6) },
+                        size = 42.dp,
+                        round = true,
                     )
-                }
-            }
-            HorizontalDivider()
-            when (tab) {
-                "contacts" -> ContactsView(client, onOpenChat = { peerUid ->
-                    scopeLaunchOpenSingle(client, peerUid) { conv -> selected = conv; tab = "chat" }
-                })
-                "moments" -> MomentsView(client)
-                else -> {
-                    var showSearch by remember { mutableStateOf(false) }
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                        OutlinedButton(onClick = { showSearch = true }, modifier = Modifier.weight(1f)) { Text("🔍 搜索消息") }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f).clickable { showProfile = true }) {
+                        Text(
+                            client.myNickname.ifEmpty { client.myUid.takeLast(6) },
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.height(3.dp))
+                        StatusPill(state)
                     }
-                    ConversationList(client, selected) { selected = it }
-                    if (showSearch) {
-                        MessageSearchDialog(client, onJump = { convId ->
-                            scopeLaunchOpenSingleByConv(client, convId) { conv -> selected = conv }
-                        }) { showSearch = false }
+                    TextButton(onClick = onLogout) { Text("退出") }
+                }
+                // 视图切换：聊天 / 通讯录 / 朋友圈
+                SegmentedRow(
+                    listOf("chat" to "聊天", "contacts" to "通讯录", "moments" to "朋友圈"),
+                    selected = tab,
+                ) { id ->
+                    tab = id
+                    if (id != "chat") selected = null
+                }
+                HorizontalDivider()
+                when (tab) {
+                    "contacts" -> ContactsView(client, onOpenChat = { peerUid ->
+                        scopeLaunchOpenSingle(client, peerUid) { conv -> selected = conv; tab = "chat" }
+                    })
+                    "moments" -> MomentsView(client)
+                    else -> {
+                        var showSearch by remember { mutableStateOf(false) }
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                            OutlinedButton(
+                                onClick = { showSearch = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(vertical = 8.dp),
+                                shape = RoundedCornerShape(10.dp),
+                            ) { Text("搜索消息", style = MaterialTheme.typography.labelMedium) }
+                        }
+                        ConversationList(client, selected) { selected = it }
+                        if (showSearch) {
+                            MessageSearchDialog(client, onJump = { convId ->
+                                scopeLaunchOpenSingleByConv(client, convId) { conv -> selected = conv }
+                            }) { showSearch = false }
+                        }
                     }
                 }
             }
         }
         VerticalDivider()
         if (selected == null) {
-            Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                when (tab) {
-                    "contacts" -> Text("选择好友开始聊天", color = Color.Gray)
-                    "moments" -> Text("朋友圈", color = Color.Gray)
-                    else -> Text("选择一个会话开始聊天", color = Color.Gray)
+            Box(
+                Modifier.weight(1f).fillMaxHeight().background(MaterialTheme.colorScheme.background),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        Modifier.size(76.dp)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("雁", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    }
+                    Spacer(Modifier.height(18.dp))
+                    Text(
+                        when (tab) {
+                            "contacts" -> "从通讯录选一个好友开始聊天"
+                            "moments" -> "朋友圈里还没有内容"
+                            else -> "从左侧选择一个会话开始聊天"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         } else {
@@ -445,22 +374,51 @@ private fun scopeLaunch(block: suspend () -> Unit) {
 @Composable
 fun ConversationList(client: ImClient, selected: Conversation?, onSelect: (Conversation) -> Unit) {
     val list by client.conversations.collectAsState()
-    LazyColumn(Modifier.fillMaxSize()) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 6.dp)) {
+        if (list.isEmpty()) {
+            item { EmptyHint("还没有会话，去通讯录找个人聊聊吧") }
+        }
         items(list, key = { it.id }) { conv ->
             val isSel = selected?.id == conv.id
+            val title = conv.title.ifEmpty { conv.id.takeLast(8) }
+            val unread = (conv.lastSeq - conv.readSeq).coerceAtLeast(0)
             Surface(
-                color = if (isSel) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface,
+                color = if (isSel) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                else Color.Transparent,
                 onClick = { onSelect(conv) },
-                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
             ) {
-                Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.padding(horizontal = 10.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(title, size = 42.dp, round = true)
+                    Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(conv.title.ifEmpty { conv.id.takeLast(8) }, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(2.dp))
-                        val unread = (conv.lastSeq - conv.readSeq).coerceAtLeast(0)
-                        if (conv.lastSeq > conv.readSeq) {
-                            Text("未读 $unread(conv)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        Text(
+                            title,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            if (conv.type == "group") "群聊" else "单聊",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (unread > 0) {
+                        Box(
+                            Modifier
+                                .background(MaterialTheme.colorScheme.error, RoundedCornerShape(50))
+                                .padding(horizontal = 6.dp, vertical = 1.dp),
+                        ) {
+                            Text(
+                                unread.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onError,
+                            )
                         }
+                        Spacer(Modifier.width(6.dp))
                     }
                     if (conv.type == "group") {
                         var infoOpen by remember { mutableStateOf(false) }
@@ -471,7 +429,6 @@ fun ConversationList(client: ImClient, selected: Conversation?, onSelect: (Conve
                     }
                 }
             }
-            HorizontalDivider()
         }
     }
 }
@@ -490,61 +447,89 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
         if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1)
     }
 
-    Column(Modifier.fillMaxSize()) {
+    val title = conversation.title.ifEmpty { conversation.id.takeLast(8) }
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         // 头部
-        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(conversation.title.ifEmpty { conversation.id.takeLast(8) }, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.weight(1f))
-            if (conversation.type == "single") {
-                IconButton(
-                    onClick = {
-                        // 从会话 ID 解析对端 UID：s_{uidA}_{uidB}
-                        val uids = conversation.id.removePrefix("s_").split("_")
-                        val peer = uids.firstOrNull { it != client.myUid }
-                        if (peer != null) client.callController.startCall(peer)
-                    },
-                ) { Text("📞") }
+        Surface(color = MaterialTheme.colorScheme.surface) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Avatar(title, size = 38.dp, round = true)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        title,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        if (conversation.type == "group") "群聊" else "单聊",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (conversation.type == "single") {
+                    IconButton(
+                        onClick = {
+                            // 从会话 ID 解析对端 UID：s_{uidA}_{uidB}
+                            val uids = conversation.id.removePrefix("s_").split("_")
+                            val peer = uids.firstOrNull { it != client.myUid }
+                            if (peer != null) client.callController.startCall(peer)
+                        },
+                    ) { Text("📞", style = MaterialTheme.typography.titleMedium) }
+                }
             }
         }
         HorizontalDivider()
         // 消息列表
         LazyColumn(Modifier.weight(1f), state = listState, contentPadding = PaddingValues(12.dp)) {
             items(msgs, key = { it.serverMsgId.ifEmpty { it.clientMsgId ?: "" } }) { m ->
-                MessageBubble(m, mine = m.fromUid == client.myUid)
+                MessageBubble(client, m, mine = m.fromUid == client.myUid)
                 Spacer(Modifier.height(8.dp))
             }
         }
         HorizontalDivider()
-        // 输入
-        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            // 附件按钮
-            IconButton(
-                onClick = {
-                    scope.launch {
-                        val file = pickFile() ?: return@launch
-                        try {
-                            client.sendAttachment(conversation.id, file)
-                        } catch (e: Throwable) {
-                            sendError = e.message ?: e.toString()
+        // 输入栏
+        Surface(color = MaterialTheme.colorScheme.surface) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = {
+                        scope.launch {
+                            val file = pickFile() ?: return@launch
+                            try {
+                                client.sendAttachment(conversation.id, file)
+                            } catch (e: Throwable) {
+                                sendError = e.message ?: e.toString()
+                            }
                         }
-                    }
-                },
-            ) { Text("📎") }
-            OutlinedTextField(
-                input, { input = it },
-                placeholder = { Text("输入消息…") },
-                modifier = Modifier.weight(1f),
-                maxLines = 4,
-            )
-            Spacer(Modifier.width(8.dp))
-            Button(
-                enabled = input.isNotBlank(),
-                onClick = {
-                    val text = input
-                    input = ""
-                    scope.launch { client.sendMessage(conversation.id, text) }
-                },
-            ) { Text("发送") }
+                    },
+                ) { Text("📎", style = MaterialTheme.typography.titleMedium) }
+                Spacer(Modifier.width(4.dp))
+                OutlinedTextField(
+                    input, { input = it },
+                    placeholder = { Text("输入消息…") },
+                    modifier = Modifier.weight(1f),
+                    maxLines = 4,
+                    shape = RoundedCornerShape(14.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+                Button(
+                    enabled = input.isNotBlank(),
+                    onClick = {
+                        val text = input
+                        input = ""
+                        scope.launch { client.sendMessage(conversation.id, text) }
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
+                ) { Text("发送") }
+            }
         }
         sendError?.let {
             Text(
@@ -558,29 +543,47 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
 }
 
 @Composable
-fun MessageBubble(m: Msg, mine: Boolean) {
+fun MessageBubble(client: ImClient, m: Msg, mine: Boolean) {
+    // 自己的消息尾巴在右下角，对方的在左下角 —— 靠这一处圆角差来区分方向
+    val shape = if (mine) RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp)
+    else RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp)
+    val base = Modifier
+        .widthIn(max = 340.dp)
+        .clip(shape)
+        .background(if (mine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface)
+        .let { if (mine) it else it.border(1.dp, MaterialTheme.colorScheme.outline, shape) }
+
     Row(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().padding(vertical = 3.dp),
         horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
     ) {
-        Box(
-            Modifier
-                .background(
-                    if (mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                    RoundedCornerShape(12.dp),
-                )
-                .padding(horizontal = 12.dp, vertical = 8.dp)
-        ) {
+        // 发送失败的消息整条可点：点一下用同一个 client_msg_id 重发（服务端幂等，不会重复）
+        val clickableBase = if (m.failed) {
+            base.clickable { m.clientMsgId?.let { id -> client.resend(id) } }
+        } else {
+            base
+        }
+        Box(clickableBase.padding(horizontal = 13.dp, vertical = 9.dp)) {
             SelectionContainer {
                 Column {
                     when (m.msgType) {
-                        MsgType.Image, MsgType.File, MsgType.Audio, MsgType.Video -> AttachmentView(m)
-                        else -> Text(m.text, style = MaterialTheme.typography.bodyMedium)
+                        MsgType.Image, MsgType.File, MsgType.Audio, MsgType.Video -> AttachmentView(client, m)
+                        else -> Text(
+                            m.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (mine) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                        )
                     }
+                    Spacer(Modifier.height(2.dp))
                     Text(
-                        if (m.sending) "发送中…" else timeOf(m.sentAt),
+                        when {
+                            m.sending -> "发送中…"
+                            m.failed -> "发送失败，点击重试"
+                            else -> timeOf(m.sentAt)
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        color = if (mine) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
                     )
                 }
             }
@@ -589,8 +592,9 @@ fun MessageBubble(m: Msg, mine: Boolean) {
 }
 
 @Composable
-fun AttachmentView(m: Msg) {
+fun AttachmentView(client: ImClient, m: Msg) {
     val att = m.attachment
+    val scope = rememberCoroutineScope()
     val label = when (m.msgType) {
         MsgType.Image -> "🖼 ${att?.name ?: m.text}"
         MsgType.File -> "📄 ${att?.name ?: m.text}"
@@ -607,8 +611,18 @@ fun AttachmentView(m: Msg) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
         }
-        if (att?.url?.isNotEmpty() == true) {
-            TextButton(onClick = { openUrl(att.url) }) { Text("下载", style = MaterialTheme.typography.labelMedium) }
+        // att.url 现在是对象 key，不是可直接打开的地址：打开前用登录态换一张短时票据，
+        // 这样消息体里不会出现长期有效的登录 JWT。
+        val attKey = att?.url?.takeIf { it.isNotEmpty() }
+        if (attKey != null) {
+            TextButton(onClick = {
+                scope.launch {
+                    try {
+                        openUrl(client.api.attachmentUrl(client.myToken, attKey))
+                    } catch (_: Throwable) {
+                    }
+                }
+            }) { Text("下载", style = MaterialTheme.typography.labelMedium) }
         }
     }
 }
@@ -628,7 +642,4 @@ private fun formatSize(bytes: Long): String {
 }
 
 
-private fun timeOf(ms: Long): String {
-    // MVP 简单回显毫秒；后续按本地时区格式化
-    return "#$ms"
-}
+private fun timeOf(ms: Long): String = im.client.formatChatTime(ms)

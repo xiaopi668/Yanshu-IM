@@ -61,6 +61,7 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
                             sentAt = r.sent_at,
                             clientMsgId = r.client_msg_id,
                             sending = r.pending == 1L,
+                            failed = r.pending == 2L,
                         )
                     })
                 }
@@ -101,7 +102,11 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
             msg.serverMsgId.ifEmpty { "p_" + (msg.clientMsgId ?: msg.sentAt.toString()) },
             msg.conversationId, msg.seq, msg.fromUid, msg.msgType.v.toLong(), msg.text,
             msg.attachment?.let { runCatching { kotlinx.serialization.json.Json.encodeToString(it) }.getOrNull() },
-            msg.sentAt, msg.clientMsgId, if (msg.sending) 1L else 0L,
+            msg.sentAt, msg.clientMsgId, when {
+                msg.failed -> 2L
+                msg.sending -> 1L
+                else -> 0L
+            },
         )
         val cid = msg.conversationId
         val current = _messages.value[cid] ?: emptyList()
@@ -142,12 +147,44 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
         }
         val cid = conversationId
         val current = _messages.value[cid] ?: emptyList()
-        val idx = current.indexOfFirst { it.clientMsgId == clientMsgId && it.sending }
+        // 按 client_msg_id 认领，不要求当前是"发送中"：
+        // ACK 晚于发送超时到达时消息已被标成失败态，这里必须能把它纠正回已确认
+        val idx = current.indexOfFirst { it.clientMsgId == clientMsgId }
         if (idx < 0) return
-        val confirmed = current[idx].copy(serverMsgId = serverMsgId, seq = seq, sending = false)
+        val confirmed = current[idx].copy(serverMsgId = serverMsgId, seq = seq, sending = false, failed = false)
         // 回显行先到时会多出同 serverMsgId 的行，这里合并成一条并放回 seq 有序位置（ACK 没带 serverMsgId 就不去重）
         val rest = current.filterIndexed { i, m -> i != idx && (serverMsgId.isEmpty() || m.serverMsgId != serverMsgId) }
         _messages.value = _messages.value + (cid to insertSorted(rest, confirmed))
+    }
+
+    /** 按 client_msg_id 定位消息（UI 与重发逻辑只有这个 id，没有会话上下文） */
+    fun messageByClientId(clientMsgId: String): Msg? {
+        _messages.value.values.forEach { list ->
+            list.firstOrNull { it.clientMsgId == clientMsgId }?.let { return it }
+        }
+        return null
+    }
+
+    /** 还没被服务端确认的消息（发送中 + 失败）：重连后据此自动重发 */
+    fun unsentMessages(): List<Msg> = _messages.value.values.flatten().filter { it.sending || it.failed }
+
+    /** 上行失败 / ACK 超时：置失败态，UI 给「点击重试」入口 */
+    fun markSendFailed(clientMsgId: String) = setPendingState(clientMsgId, 2L, sending = false, failed = true)
+
+    /** 重发前：回到「发送中」 */
+    fun markSendPending(clientMsgId: String) = setPendingState(clientMsgId, 1L, sending = true, failed = false)
+
+    private fun setPendingState(clientMsgId: String, dbState: Long, sending: Boolean, failed: Boolean) {
+        db?.imQueries?.setPendingState(dbState, clientMsgId)
+        var changed = false
+        val next = _messages.value.mapValues { (_, list) ->
+            val i = list.indexOfFirst { it.clientMsgId == clientMsgId }
+            if (i < 0) list else {
+                changed = true
+                list.toMutableList().also { it[i] = it[i].copy(sending = sending, failed = failed) }
+            }
+        }
+        if (changed) _messages.value = next
     }
 
     fun removePending(clientMsgId: String, conversationId: String) {

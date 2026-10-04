@@ -37,11 +37,19 @@ class ImClient(
     var myNickname: String = ""
         private set
 
+    /** 改完昵称后同步本地缓存，避免要重新登录侧栏才更新 */
+    fun setNickname(nickname: String) {
+        myNickname = nickname
+    }
+
     val conversations = store.conversations
     val messages = store.messages
     val connectionState = connection.state
 
     private var syncJob: Job? = null
+
+    /** 未确认消息的超时计时器：clientMsgId → job */
+    private val sendTimeouts = mutableMapOf<String, Job>()
 
     suspend fun register(
         username: String, password: String, nickname: String,
@@ -121,7 +129,7 @@ class ImClient(
     }
 
     suspend fun sendMessage(conversationId: String, text: String, type: MsgType = MsgType.Text): Msg {
-        val clientMsgId = "cm-" + Random.nextLong(0, Long.MAX_VALUE).toString(36)
+        val clientMsgId = newClientMsgId()
         val pending = Msg(
             conversationId = conversationId,
             fromUid = myUid,
@@ -132,8 +140,60 @@ class ImClient(
             sending = true,
         )
         store.upsertMessage(pending)
-        connection.sendText(conversationId, clientMsgId, text, type)
+        transmit(pending)
         return pending
+    }
+
+    private fun newClientMsgId() = "cm-" + Random.nextLong(0, Long.MAX_VALUE).toString(36)
+
+    /**
+     * 上行发送。失败**不抛给 UI**，而是落成失败态：
+     * 用户能看到「发送失败，点击重试」，重连时也会自动重发。
+     * 重发沿用同一个 client_msg_id，服务端按它幂等去重，不会产生重复消息。
+     */
+    private suspend fun transmit(msg: Msg) {
+        val clientMsgId = msg.clientMsgId ?: return
+        armSendTimeout(clientMsgId)
+        try {
+            val att = msg.attachment
+            if (att != null) {
+                connection.sendAttachment(msg.conversationId, clientMsgId, msg.msgType, msg.text, att)
+            } else {
+                connection.sendText(msg.conversationId, clientMsgId, msg.text, msg.msgType)
+            }
+        } catch (e: Throwable) {
+            // 未连接 / 写失败：立刻置失败态，不等超时
+            clearSendTimeout(clientMsgId)
+            store.markSendFailed(clientMsgId)
+        }
+    }
+
+    /** ACK 超时兜底：服务端与网络都没回音时，也要让用户看到失败并能重发 */
+    private fun armSendTimeout(clientMsgId: String) {
+        sendTimeouts.remove(clientMsgId)?.cancel()
+        sendTimeouts[clientMsgId] = scope.launch {
+            delay(SEND_TIMEOUT_MS)
+            val m = store.messageByClientId(clientMsgId) ?: return@launch
+            if (m.sending) store.markSendFailed(clientMsgId)
+        }
+    }
+
+    /** 收到 ACK / 失败应答后取消超时计时；由 ImClientWire 调用 */
+    internal fun clearSendTimeout(clientMsgId: String) {
+        sendTimeouts.remove(clientMsgId)?.cancel()
+    }
+
+    /** 重发一条失败或仍在发送中的消息（沿用原 client_msg_id） */
+    fun resend(clientMsgId: String) {
+        val msg = store.messageByClientId(clientMsgId) ?: return
+        if (!msg.sending && !msg.failed) return
+        store.markSendPending(clientMsgId)
+        scope.launch { transmit(msg.copy(sending = true, failed = false)) }
+    }
+
+    /** 重连成功后把所有未确认消息重发一遍（幂等键保证不会重复） */
+    internal fun flushOutbox() {
+        store.unsentMessages().forEach { m -> m.clientMsgId?.let { resend(it) } }
     }
 
     /**
@@ -148,7 +208,7 @@ class ImClient(
             else -> "file"
         }
         val key = api.uploadAttachment(myToken, kind, file.bytes)
-        val clientMsgId = "cm-" + Random.nextLong(0, Long.MAX_VALUE).toString(36)
+        val clientMsgId = newClientMsgId()
         val type = when (kind) {
             "image" -> MsgType.Image
             "audio" -> MsgType.Audio
@@ -161,7 +221,8 @@ class ImClient(
             msgType = type,
             text = file.name,
             attachment = im.client.proto.Attachment(
-                url = api.downloadUrl(myToken, key),
+                // 这里放对象 key，不放带凭证的地址：消息会被广播给会话成员并落库
+                url = key,
                 name = file.name,
                 size = file.bytes.size.toLong(),
                 mime = file.mime,
@@ -171,7 +232,7 @@ class ImClient(
             sending = true,
         )
         store.upsertMessage(pending)
-        connection.sendAttachment(conversationId, clientMsgId, type, file.name, pending.attachment!!)
+        transmit(pending)
         return pending
     }
 
@@ -187,9 +248,8 @@ class ImClient(
     fun storeInternal(): MemoryStore = store
 
     companion object {
-        init {
-            // 把 ACK 转成 store 的 confirm 逻辑在 ImClientWire.kt 里接线
-        }
+        /** 发送超时：超过这个时间没收到 ACK/失败帧就标失败，让用户能重发 */
+        private const val SEND_TIMEOUT_MS = 10_000L
     }
 }
 

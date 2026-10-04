@@ -21,7 +21,17 @@ fun ImClient.wireCallbacks(scope: CoroutineScope = CoroutineScope(SupervisorJob(
 
     connection.acks.onEach { ack ->
         // ACK 到达：保留消息条目，只清 pending 并回填 serverMsgId/seq（回显未到时消息不丢）
+        clearSendTimeout(ack.clientMsgId)
         store.confirmMessage(ack.clientMsgId, ack.serverMsgId, ack.seq, ack.conversationId)
+    }.launchIn(scope)
+
+    connection.errors.onEach { err ->
+        // 服务端明确拒绝（不是成员 / 落库失败 / 不支持）：立刻置失败态。
+        // 没有这条通路时，失败只写在服务端日志里，客户端会一直停在"发送中"。
+        if (err.refClientMsgId.isNotEmpty()) {
+            clearSendTimeout(err.refClientMsgId)
+            store.markSendFailed(err.refClientMsgId)
+        }
     }.launchIn(scope)
 
     connection.pullResps.onEach { resp ->
@@ -50,6 +60,9 @@ fun ImClient.wireCallbacks(scope: CoroutineScope = CoroutineScope(SupervisorJob(
                 val read = local?.readSeq ?: 0
                 if (maxSeq > read) connection.pull(cid, read)
             }
+            // 重连成功：把断线期间没发出去 / 没被确认的消息补发一遍。
+            // 服务端按 client_msg_id 幂等，重发不会产生重复消息。
+            flushOutbox()
         }
     }.launchIn(scope)
 }

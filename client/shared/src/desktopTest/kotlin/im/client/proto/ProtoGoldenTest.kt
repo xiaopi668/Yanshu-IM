@@ -163,6 +163,17 @@ class ProtoGoldenTest {
         assertEquals("Alice", ok.nickname)
     }
 
+    /** Frame field 12：失败应答。客户端解不出它，"发送失败"就传不到 UI，消息会一直停在发送中 */
+    @Test
+    fun errorFrame() {
+        val e = assertIs<FrameKind.ErrorFrame>(
+            Frames.decodeFrame(readGolden("error_send_failed"))
+        ).data
+        assertEquals("cm-err-1", e.refClientMsgId)
+        assertEquals("not_member", e.code)
+        assertEquals("not a member of conversation s_1_2", e.message)
+    }
+
     /** 脏帧必须返回 null 而不是抛异常，否则一个坏帧会炸断读循环 */
     @Test
     fun corruptedFrameIsNull() {

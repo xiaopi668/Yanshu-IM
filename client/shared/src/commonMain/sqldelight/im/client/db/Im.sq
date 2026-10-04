@@ -28,6 +28,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 markConfirmed:
 UPDATE message_cache SET pending = 0 WHERE client_msg_id = ?;
 
+-- pending 语义：0 = 已被服务端确认，1 = 待确认（发送中），2 = 失败（可重发）
+setPendingState:
+UPDATE message_cache SET pending = ? WHERE client_msg_id = ?;
+
 deletePending:
 DELETE FROM message_cache WHERE client_msg_id = ? AND pending = 1;
 
