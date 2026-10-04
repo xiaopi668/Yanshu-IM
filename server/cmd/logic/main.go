@@ -219,6 +219,23 @@ func genYid() string {
 	return "ys" + hex.EncodeToString(b)
 }
 
+// genUniqueYid 生成一个未被占用的雁书号（撞号重试）。
+// 注册与 OIDC 自动建号都走这里 —— 保证生成的号一定满足 yidRe。
+func (a *apiv1) genUniqueYid() string {
+	yid := genYid()
+	for i := 0; i < 5; i++ {
+		var n int
+		if err := a.db.QueryRow(`SELECT COUNT(*) FROM user WHERE yid=?`, yid).Scan(&n); err != nil {
+			break
+		}
+		if n == 0 {
+			break
+		}
+		yid = genYid()
+	}
+	return yid
+}
+
 func genID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
@@ -272,17 +289,7 @@ func (a *apiv1) register(w http.ResponseWriter, r *http.Request) {
 	}
 	yid := req.Yid
 	if yid == "" {
-		yid = genYid()
-		for i := 0; i < 5; i++ { // 撞号重试
-			var n int
-			if err := a.db.QueryRow(`SELECT COUNT(*) FROM user WHERE yid=?`, yid).Scan(&n); err != nil {
-				break
-			}
-			if n == 0 {
-				break
-			}
-			yid = genYid()
-		}
+		yid = a.genUniqueYid()
 	} else {
 		if !yidRe.MatchString(yid) {
 			fail(w, 400, errors.New("yid: 5-20位，字母开头，可含数字/_/-"))
@@ -315,6 +322,60 @@ func (a *apiv1) register(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"uid": uid, "yid": yid, "token": tok})
 }
 
+var (
+	errBadCredential  = errors.New("bad credentials")
+	errAmbiguousEmail = errors.New("该邮箱绑定了多个账号，请改用用户名或雁书号登录")
+)
+
+// lookupLoginUser 把登录标识解析成唯一账号。
+//
+// 依次尝试：用户名 / 雁书号（都是唯一的），再尝试邮箱。
+// 邮箱在库里**没有唯一索引**（历史原因），同一邮箱可能挂在多个账号上，
+// 那种情况必须明确报错而不是随便挑一个 —— 否则会出现「用我的邮箱登进了别人的账号」。
+func (a *apiv1) lookupLoginUser(ident string) (uid, hash string, err error) {
+	ident = strings.TrimSpace(ident)
+	if ident == "" {
+		return "", "", errBadCredential
+	}
+	err = a.db.QueryRow(
+		`SELECT uid, password_hash FROM user WHERE username=? OR yid=?`, ident, ident,
+	).Scan(&uid, &hash)
+	if err == nil {
+		return uid, hash, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", "", err
+	}
+	// 退回按邮箱匹配；故意不带 password_hash，先判断是否唯一
+	rows, qerr := a.db.Query(`SELECT uid FROM user WHERE email=? AND email<>'' LIMIT 2`, ident)
+	if qerr != nil {
+		return "", "", qerr
+	}
+	defer rows.Close()
+	var uids []string
+	for rows.Next() {
+		var u string
+		if scanErr := rows.Scan(&u); scanErr != nil {
+			return "", "", scanErr
+		}
+		uids = append(uids, u)
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", err
+	}
+	switch len(uids) {
+	case 0:
+		return "", "", sql.ErrNoRows
+	case 1:
+		if err := a.db.QueryRow(`SELECT password_hash FROM user WHERE uid=?`, uids[0]).Scan(&hash); err != nil {
+			return "", "", err
+		}
+		return uids[0], hash, nil
+	default:
+		return "", "", errAmbiguousEmail
+	}
+}
+
 func (a *apiv1) login(w http.ResponseWriter, r *http.Request) {
 	if err := a.rateLimit(r, "login", a.cfg.AuthRateLimit, 5*time.Minute); err != nil {
 		fail(w, 429, err)
@@ -339,15 +400,16 @@ func (a *apiv1) login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var uid, hash string
-	err := a.db.QueryRow(`SELECT uid, password_hash FROM user WHERE username=? OR yid=?`,
-		req.Username, req.Username).Scan(&uid, &hash)
-	if errors.Is(err, sql.ErrNoRows) {
-		fail(w, 401, errors.New("bad credentials"))
-		return
-	}
+	uid, hash, err := a.lookupLoginUser(req.Username)
 	if err != nil {
-		fail(w, 500, err)
+		// 账号不存在与口令错误返回同一句，避免变成账号枚举接口
+		if errors.Is(err, errAmbiguousEmail) {
+			fail(w, 409, err)
+		} else if errors.Is(err, sql.ErrNoRows) || errors.Is(err, errBadCredential) {
+			fail(w, 401, errors.New("bad credentials"))
+		} else {
+			fail(w, 500, err)
+		}
 		return
 	}
 	if !auth.CheckPassword(hash, req.Password) {

@@ -466,7 +466,10 @@ func (a *apiv1) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		if nick == "" {
 			nick = username
 		}
-		yid := username
+		// 雁书号必须单独生成：之前直接拿 username 当 yid，而 "oidc_<provider>_<hash>"
+		// 有 26 位，超过 yidRe 允许的 20 位 —— 这些账号在「我的资料」里一保存就被
+		// 自家校验规则拒掉（而且此时 yid_changed=0，用户只能靠改号自救）。
+		yid := a.genUniqueYid()
 		now := time.Now().UnixMilli()
 		hash, _ := auth.HashPassword(randHex(16)) // 随机密码（OIDC 登录不使用）
 		// yid_changed=1 的语义是「用户已主动改过雁书号」。OIDC 建号时 yid 还是自动生成的，
@@ -519,12 +522,16 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
+// shortHash 用于给 OIDC 账号拼一个稳定的短后缀。
+// 必须用无符号累加：有符号 int 溢出后会得到负数，%x 会带上一个 '-' 前缀
+// （之前生成过 oidc_github_-2abb0aacadcd5a97 这种用户名）。
 func shortHash(s string) string {
-	sum := 0
-	for _, c := range s {
-		sum = sum*31 + int(c)
+	var sum uint64 = 14695981039346656037 // FNV-1a 偏移量
+	for i := 0; i < len(s); i++ {
+		sum ^= uint64(s[i])
+		sum *= 1099511628211
 	}
-	return fmt.Sprintf("%x", sum)
+	return fmt.Sprintf("%012x", sum&0xffffffffffff)
 }
 
 var _ = sql.ErrNoRows

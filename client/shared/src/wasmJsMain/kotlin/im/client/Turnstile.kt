@@ -17,17 +17,24 @@ actual fun registerTurnstileErrorCallback(onError: (String) -> Unit) {
 }
 
 /**
- * 创建（或复用）容器后渲染小组件。
- * Compose Web 的界面画在 canvas 上，DOM 里并不存在名为 containerId 的元素，
- * 所以必须自己建 div —— 直接 getElementById 会拿到 null，render(null, …) 抛异常。
+ * 建容器并按 Cloudflare 要求渲染。
  *
- * 另两点：
- * - 重复渲染同一容器会被 Cloudflare 判为 already rendered 而抛错，因此记住 widgetId 走 reset；
- * - 装上 error/timeout/expired 回调，把失败原因写到 window.turnstileError，
- *   否则失败时页面上只剩一个永远转圈的框，看不出是密钥错、域名不匹配还是网络不通。
+ * Compose Web 把界面画在 canvas 上，DOM 里没有名为 containerId 的节点，必须自己建 div。
+ * 建好后先 display:none —— 位置要等 Compose 的 onGloballyPositioned 回传，
+ * 在那之前显示出来就会闪一下、或者停在左上角。
+ *
+ * 重复渲染同一容器会被 Cloudflare 判为 already rendered 抛错，所以记住 widgetId 走 reset；
+ * 同时挂上 error/timeout/expired 回调，把失败原因写到 window.turnstileError。
  */
-@JsFun("(siteKey, containerId) => { let el = document.getElementById(containerId); if (!el) { el = document.createElement('div'); el.id = containerId; document.body.appendChild(el); } el.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:72px;z-index:9999;'; window.turnstileToken = ''; window.turnstileError = ''; try { if (window.turnstileWidgetId) { window.turnstile.reset(window.turnstileWidgetId); return true; } window.turnstileWidgetId = window.turnstile.render(el, { sitekey: siteKey, callback: function(t) { window.turnstileToken = t; window.turnstileError = ''; }, 'error-callback': function(code) { window.turnstileError = '人机验证失败（错误码 ' + code + '）：常见原因是 Site Key 与当前域名不匹配，或该密钥已被删除'; }, 'timeout-callback': function() { window.turnstileError = '人机验证超时，请重新验证'; }, 'expired-callback': function() { window.turnstileToken = ''; window.turnstileError = '验证已过期，请重新验证'; } }); return true; } catch (e) { window.turnstileError = '渲染人机验证失败：' + e; return false; } }")
+@JsFun("(siteKey, containerId) => { let el = document.getElementById(containerId); if (!el) { el = document.createElement('div'); el.id = containerId; document.body.appendChild(el); } el.style.cssText = 'position:fixed;display:none;z-index:5;'; window.turnstileToken = ''; window.turnstileError = ''; try { if (window.turnstileWidgetId) { window.turnstile.reset(window.turnstileWidgetId); return true; } window.turnstileWidgetId = window.turnstile.render(el, { sitekey: siteKey, callback: function(t) { window.turnstileToken = t; window.turnstileError = ''; }, 'error-callback': function(code) { window.turnstileError = '人机验证失败（错误码 ' + code + '）：常见原因是 Site Key 与当前域名不匹配，或该密钥已被删除'; }, 'timeout-callback': function() { window.turnstileError = '人机验证超时，请重新验证'; }, 'expired-callback': function() { window.turnstileToken = ''; window.turnstileError = '验证已过期，请重新验证'; } }); return true; } catch (e) { window.turnstileError = '渲染人机验证失败：' + e; return false; } }")
 private external fun jsRenderTurnstile(siteKey: String, containerId: String): Boolean
+
+/** 位置与尺寸由 Compose 布局给出（窗口坐标系、CSS 像素）：精确落在「人机验证」那一格上，不再是浮层 */
+@JsFun("(containerId, left, top, width, height) => { const el = document.getElementById(containerId); if (!el) return false; el.style.cssText = 'position:fixed;left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;display:flex;align-items:center;justify-content:center;z-index:5;'; return true; }")
+private external fun jsPlaceTurnstile(containerId: String, left: Int, top: Int, width: Int, height: Int): Boolean
+
+@JsFun("(containerId) => { const el = document.getElementById(containerId); if (el) el.style.display = 'none'; }")
+private external fun jsHideTurnstile(containerId: String)
 
 @JsFun("() => (typeof window.turnstileToken === 'string') ? window.turnstileToken : ''")
 private external fun jsReadToken(): String
@@ -83,5 +90,19 @@ actual fun renderTurnstileWidget(siteKey: String, containerId: String): Boolean 
         true
     } catch (_: Throwable) {
         false
+    }
+}
+
+actual fun positionTurnstileWidget(containerId: String, left: Int, top: Int, width: Int, height: Int) {
+    try {
+        jsPlaceTurnstile(containerId, left, top, width, height)
+    } catch (_: Throwable) {
+    }
+}
+
+actual fun hideTurnstileWidget(containerId: String) {
+    try {
+        jsHideTurnstile(containerId)
+    } catch (_: Throwable) {
     }
 }

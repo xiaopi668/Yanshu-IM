@@ -78,6 +78,14 @@ compose 里三个服务都配了基于 `/healthz` 的 healthcheck —— `docker
 巡检一次，发现封禁或令牌版本落后就断开。重置密码会 `token_version+1`，
 该账号此前签发的所有 JWT 当场作废。
 
+**登录 / 注册是两个独立界面**：登录用「用户名 / 雁书号 / **邮箱** + 密码」，注册用「用户名 + 密码 + 邮箱 + 验证码」。
+两者用卡片底部的链接互相切换；站点关闭注册时不提供「去注册」，但仍能退回登录。
+
+**用邮箱登录**：服务端按 用户名 → 雁书号 → 邮箱 的顺序解析登录标识（三者都可直接填在同一个输入框）。
+注意 `user.email` **没有唯一索引**，同一邮箱可能被多个账号绑定；这种情况下登录会返回 `409` 并提示
+「该邮箱绑定了多个账号，请改用用户名或雁书号登录」，而**不会随便挑一个**（那会造成「用我的邮箱登进别人账号」）。
+邮箱不存在与密码错误都返回同一句 `bad credentials`，避免变成账号枚举接口。
+
 **OIDC 登录（默认不需要用户复制令牌）**：授权成功后令牌怎么回到客户端，按平台分三种，都不用用户手工复制：
 
 - **Web**：页面本身就是回调目标（同源），服务端把令牌放在 URL fragment，页面加载时读取并**立即从地址栏抹掉**
@@ -147,6 +155,31 @@ cd client
 | Gradle / AGP | Gradle 9.6+、AGP 9.4.x（wrapper 已配置，无需手动指定） |
 
 CI 的 `android` job 会自动装好这些，并把 APK 作为 artifact 上传。
+
+### 构建期配置：默认服务器地址 / 隐藏地址输入
+
+私有化部署时可以把服务端地址**固化进客户端**，登录页不再暴露「服务器地址」入口：
+
+```bash
+cd client
+# 打包时指定（三个平台通用，含 Web）
+./gradlew :composeApp:assembleDebug \
+  -Pim.api=https://im.example.com \
+  -Pim.ws=wss://im.example.com/ws \
+  -Pim.hideServer=true
+```
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `im.api` | `http://127.0.0.1:10002` | 默认 API 地址。**显式设置后 Web 端不再按页面域名自动推导** |
+| `im.ws` | `ws://127.0.0.1:10001/ws` | 默认 WS 地址 |
+| `im.hideServer` | `false` | 为 `true` 时登录页**完全不显示**服务器地址入口，用户无法改 |
+
+也可以写进 `client/gradle.properties`，或用环境变量 `IM_APP_API` / `IM_APP_WS` / `IM_APP_HIDE_SERVER`（便于 CI 注入）。
+
+实现方式：Gradle 任务 `generateImConfig` 把参数写成一个生成的 Kotlin 文件 
+(`composeApp/build/generated/imconfig/im/app/ImBuildConfig.kt`)，业务代码只读 `ImBuildConfig`。
+参数是任务的输入，改了必然重新生成 —— 不会出现「改了没生效」的缓存问题。
 
 登录页填入服务端 API/WS 地址即可（默认 127.0.0.1:10002 / :10001）。
 

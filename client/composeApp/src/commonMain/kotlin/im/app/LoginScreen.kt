@@ -12,6 +12,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -23,6 +25,8 @@ import im.client.auth.oidcLogin
 import im.client.auth.saveSession
 import im.client.openUrl
 import im.client.registerTurnstileCallback
+import im.client.hideTurnstileWidget
+import im.client.positionTurnstileWidget
 import im.client.registerTurnstileErrorCallback
 import im.client.renderTurnstileWidget
 import im.client.wireCallbacks
@@ -53,6 +57,9 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
     // 人机验证的失败原因（脚本被拦、密钥不匹配、超时…）：不显示出来用户只会看到一直转圈
     var turnstileErr by remember { mutableStateOf<String?>(null) }
     var showConn by remember { mutableStateOf(false) }
+    // 登录 / 注册是两个独立界面：字段、按钮、校验要求都不一样。
+    // 之前挤在同一张卡片里，既容易误点，也让「注册需要邮箱验证码」这类要求看不清。
+    var isRegister by remember { mutableStateOf(false) }
     var oidcToken by remember { mutableStateOf("") }
     // 自动回调失败时才提示手工粘贴；成功路径下这个输入框根本用不上
     var oidcManual by remember { mutableStateOf(false) }
@@ -119,16 +126,23 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                 modifier = Modifier.widthIn(max = 440.dp).fillMaxWidth(),
             ) {
                 Column(Modifier.padding(horizontal = 28.dp, vertical = 30.dp)) {
-                    Text("登录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (isRegister) "注册" else "登录",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "输入账号密码，或使用下方第三方账号",
+                        if (isRegister) "创建一个新账号" else "用户名 / 雁书号 / 邮箱 + 密码，或使用下方第三方账号",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(22.dp))
 
-                    AuthField(username, { username = it }, "用户名 / 雁书号")
+                    AuthField(
+                        username, { username = it },
+                        if (isRegister) "用户名（登录名）" else "用户名 / 雁书号 / 邮箱",
+                    )
                     Spacer(Modifier.height(14.dp))
                     AuthField(
                         password, { password = it }, "密码",
@@ -146,8 +160,8 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                         },
                     )
 
-                    // 邮箱常驻（服务端无论是否开验证码都会保存）；验证码相关只在站点开启后出现
-                    if (canRegister) {
+                    // 邮箱只在注册界面出现（服务端无论是否开验证码都会保存）；验证码相关只在站点开启后出现
+                    if (isRegister && canRegister) {
                         Spacer(Modifier.height(14.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.weight(1f)) {
@@ -183,7 +197,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                 )
                             }
                         }
-                    } else {
+                    } else if (isRegister) {
                         // 之前这里什么都不显示：注册被关闭时整个注册区（含邮箱框）静默消失，
                         // 用户只会以为「注册功能没了 / 找不到填邮箱的地方」。
                         Spacer(Modifier.height(14.dp))
@@ -201,8 +215,12 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                     }
 
                     // Turnstile：小组件由各平台 actual 负责渲染（只有 Web 端真的画得出来）
-                    if (turnstileOn) {
+                    if (isRegister && turnstileOn) {
                         TurnstileSlot(turnstileToken, turnstileRenderable, turnstileErr)
+                    }
+                    // 离开注册界面就把小组件藏起来：它是个 DOM 浮层，不藏会留在页面上
+                    LaunchedEffect(isRegister, turnstileOn) {
+                        if (!isRegister || !turnstileOn) hideTurnstileWidget("turnstile-box")
                     }
 
                     error?.let {
@@ -215,7 +233,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                     }
 
                     Spacer(Modifier.height(24.dp))
-                    Button(
+                    if (!isRegister) Button(
                         enabled = !busy,
                         onClick = {
                             busy = true; error = null; tip = null
@@ -237,10 +255,9 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                         shape = RoundedCornerShape(12.dp),
                     ) { Text(if (busy) "登录中…" else "登录", style = MaterialTheme.typography.titleSmall) }
 
-                    if (canRegister) {
-                        Spacer(Modifier.height(10.dp))
+                    if (isRegister && canRegister) {
                         OutlinedButton(
-                            enabled = !busy && !turnstileBlocked,
+                            enabled = !busy && !turnstileBlocked && username.isNotBlank() && password.isNotBlank(),
                             onClick = {
                                 busy = true; error = null; tip = null
                                 scope.launch {
@@ -261,6 +278,26 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                             modifier = Modifier.fillMaxWidth().height(46.dp),
                             shape = RoundedCornerShape(12.dp),
                         ) { Text("注册并登录", style = MaterialTheme.typography.titleSmall) }
+                    }
+
+                    // 登录 / 注册切换。站点关闭注册时不提供「去注册」，
+                    // 但仍要能退回登录，否则会卡在注册界面。
+                    if (canRegister || isRegister) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            if (isRegister) "已有账号？去登录" else "还没有账号？去注册",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable {
+                                    isRegister = !isRegister
+                                    error = null
+                                    tip = null
+                                    oidcManual = false
+                                }
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                        )
                     }
 
                     // 第三方登录
@@ -329,22 +366,26 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                         }
                     }
 
-                    // 服务器地址默认收起，避免和主表单抢视线；改了会自动重新拉站点配置
-                    Spacer(Modifier.height(20.dp))
-                    Text(
-                        if (showConn) "收起服务器地址" else "服务器地址（$apiBase）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable { showConn = !showConn }
-                            .padding(horizontal = 6.dp, vertical = 6.dp),
-                    )
-                    if (showConn) {
-                        Spacer(Modifier.height(10.dp))
-                        AuthField(apiBase, { apiBase = it }, "API 地址")
-                        Spacer(Modifier.height(14.dp))
-                        AuthField(wsBase, { wsBase = it }, "WS 地址")
+                    // 构建期可用 -Pim.hideServer=true 整体隐藏：私有化部署时终端用户
+                    // 既不需要、也不应该看到服务端地址。
+                    if (!ImBuildConfig.HIDE_SERVER_CONFIG) {
+                        // 服务器地址默认收起，避免和主表单抢视线；改了会自动重新拉站点配置
+                        Spacer(Modifier.height(20.dp))
+                        Text(
+                            if (showConn) "收起服务器地址" else "服务器地址（$apiBase）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { showConn = !showConn }
+                                .padding(horizontal = 6.dp, vertical = 6.dp),
+                        )
+                        if (showConn) {
+                            Spacer(Modifier.height(10.dp))
+                            AuthField(apiBase, { apiBase = it }, "API 地址")
+                            Spacer(Modifier.height(14.dp))
+                            AuthField(wsBase, { wsBase = it }, "WS 地址")
+                        }
                     }
                 }
             }
@@ -427,8 +468,20 @@ private fun TurnstileSlot(token: String, renderable: Boolean, err: String? = nul
         if (token.isEmpty()) timeout = true
     }
     Spacer(Modifier.height(16.dp))
+    // 人机验证是 DOM 浮层（Web 端 Compose 画在 canvas 上，无法嵌套 DOM），
+    // 位置只能由这里回传：否则它会固定停在窗口某个位置、盖住别的元素。
+    LaunchedEffect(token) {
+        if (token.isNotEmpty()) hideTurnstileWidget("turnstile-box")
+    }
     Box(
         Modifier.fillMaxWidth().height(72.dp)
+            .onGloballyPositioned { coords ->
+                val b = coords.boundsInWindow()
+                positionTurnstileWidget(
+                    "turnstile-box",
+                    b.left.toInt(), b.top.toInt(), b.width.toInt(), b.height.toInt(),
+                )
+            }
             .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
         contentAlignment = Alignment.Center,

@@ -501,12 +501,19 @@ internal fun momentTimeOf(ms: Long): String = im.client.formatChatTime(ms)
 
 // ============ 个人资料 ============
 
+// 与服务端 yidRe 保持一致：^[a-zA-Z][a-zA-Z0-9_-]{4,19}$
+private val yidRegex = Regex("^[a-zA-Z][a-zA-Z0-9_-]{4,19}$")
+
 @Composable
 fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
     var nickname by remember { mutableStateOf(client.myNickname) }
     var yid by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("") }
     var yidChanged by remember { mutableStateOf(true) }
+    // 服务端返回的原始雁书号：只有用户真的改了才提交 changeYid。
+    // 之前无条件提交，导致「雁书号不合规」的账号连昵称都存不了
+    //（早期 OIDC 自动建号生成的号有 26 位，超过 20 位上限）。
+    var originalYid by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
@@ -516,6 +523,7 @@ fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
             val me = client.api.me(client.myToken)
             nickname = me.nickname
             yid = me.yid
+            originalYid = me.yid
             username = me.username
             yidChanged = me.yid_changed
             avatarKey = me.avatar
@@ -570,9 +578,16 @@ fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
                         label = { Text("雁书号") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                     )
                     Text(
-                        "雁书号只能修改一次",
+                        if (!yidRegex.matches(yid)) {
+                            // 早期 OIDC 自动建号生成的雁书号不满足规则（超长），
+                            // 不说清楚的话用户只会看到「保存失败」。
+                            "当前雁书号不符合规范（需 5-20 位、字母开头）。这是早期 OIDC 自动建号留下的，改成合规的即可，且不计入" +
+                                "「只能改一次」的额度"
+                        } else {
+                            "雁书号只能修改一次"
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (!yidRegex.matches(yid)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
                     Spacer(Modifier.height(8.dp))
@@ -597,12 +612,22 @@ fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
             TextButton(
                 onClick = {
                     scope.launch {
+                        val newYid = yid.trim()
+                        // 只有「还没改过 + 真的改了值」才提交雁书号
+                        val wantYidChange = !yidChanged && newYid.isNotEmpty() && newYid != originalYid
+                        // 先本地校验再发请求：否则昵称/用户名已经改了、却在雁书号这一步报错，
+                        // 界面提示"保存失败"但部分字段其实已经生效，用户完全看不懂。
+                        if (wantYidChange && !yidRegex.matches(newYid)) {
+                            msg = "雁书号需 5-20 位、字母开头，可含数字/_/-；请修改后再保存"
+                            return@launch
+                        }
                         try {
                             client.api.updateProfile(client.myToken, nickname.trim(), username.trim())
                             client.setNickname(nickname.trim())
-                            if (!yidChanged && yid.trim().isNotEmpty()) {
-                                client.api.changeYid(client.myToken, yid.trim())
+                            if (wantYidChange) {
+                                client.api.changeYid(client.myToken, newYid)
                                 yidChanged = true
+                                originalYid = newYid
                             }
                             msg = null
                             onDismiss()

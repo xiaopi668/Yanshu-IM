@@ -39,8 +39,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
-internal var DEFAULT_API = "http://127.0.0.1:10002"
-internal var DEFAULT_WS = "ws://127.0.0.1:10001/ws"
+// 默认地址来自构建期配置（-Pim.api / -Pim.ws，见 composeApp/build.gradle.kts 的 generateImConfig）。
+// Web 端若构建时没有显式钉住地址，applyWebDefaults() 会按页面域名覆盖它。
+internal var DEFAULT_API = ImBuildConfig.API_BASE
+internal var DEFAULT_WS = ImBuildConfig.WS_BASE
 
 @Composable
 fun AppRoot() {
