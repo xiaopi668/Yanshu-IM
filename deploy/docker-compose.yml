@@ -1,24 +1,18 @@
 # IM 全套私有化部署：MySQL + Redis + MinIO + LiveKit SFU(内嵌 TURN) + logic + gateway + admin
 #
-# 需放行的端口：10001(WS) 10002(API) 10003(管理后台) 7880/7881(信令) 50000-50200/UDP(WebRTC)
-#               3478/UDP + 49160-49200/UDP(LiveKit 内嵌 TURN) 9000/9001(MinIO)
+# 需放行的端口：10001(WS) 10002(API) 7880/7881(信令) 50000-50200/UDP(WebRTC)
+#               3478/UDP + 49160-49200/UDP(LiveKit 内嵌 TURN)
+# 不需要对外：9000/9001(MinIO) 10003(管理后台) —— 它们只绑 127.0.0.1，走 SSH 隧道或反代
 #
 # 用法：
-#   cd server && docker build -t im-server:latest -f deploy/Dockerfile .
-#   cd .. && docker compose -f deploy/docker-compose.yml up -d
+#   cp deploy/.env.example deploy/.env && 编辑 deploy/.env 填入随机密钥
+#   cd server && docker build -t im-server:latest -f deploy/Dockerfile . && cd ..
+#   docker compose -f deploy/docker-compose.yml up -d
 #
-# 服务端点：
-#   HTTP API   http://<host>:10002     (注册/登录/好友/群组/历史/上传)
-#   WebSocket  ws://<host>:10001/ws    (实时消息 + 通话信令)
-#   管理后台   http://<host>:10003/admin
-#   MinIO      http://<host>:9000      (对象存储)
-#   LiveKit    ws://<host>:7880        (音视频媒体面)
-#
-# 生产部署务必覆盖：
-#   IM_JWT_SECRET / IM_ADMIN_TOKEN / IM_LIVEKIT_API_SECRET / MySQL 与 MinIO 密码
-#   另建议设置 IM_ENV=production 使服务拒绝使用内置默认密钥，以及
-#   IM_PUBLIC_BASE_URL（站点对外地址，OIDC 回跳校验依据）、IM_ALLOWED_ORIGINS（跨源白名单）、
-#   IM_TRUST_PROXY=true（仅当本 compose 前面还有一层反代时）、IM_AUTH_RATE_LIMIT（登录限流）
+# 为什么密钥是 ${VAR:?} 必填：
+#   旧版本给所有密钥留了"开发期默认值"，照着 README 一键起的生产环境等于
+#   JWT 密钥/admin token/MinIO 口令全是公开已知值，任何人都能伪造登录、接管后台与对象存储。
+#   现在缺任何一个都直接拒绝启动，并在报错里写明缺哪个变量。
 #
 # 注意：coturn（deploy/turn）与 LiveKit 内嵌 TURN 争抢 3478/UDP，二选一；
 #       compose 默认用 LiveKit 内嵌的，独立 coturn 服务已注释掉。
@@ -28,12 +22,13 @@ services:
     restart: unless-stopped
     image: mysql:8
     environment:
-      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_ROOT_PASSWORD: ${IM_MYSQL_PASSWORD:?必须设置 IM_MYSQL_PASSWORD（数据库口令）}
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-uroot", "-proot123"]
+      # 用容器内的 MYSQL_ROOT_PASSWORD 变量，避免口令在 compose 里写第二遍（改一处漏一处）
+      test: ["CMD-SHELL", "mysqladmin ping -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
       retries: 20
 
@@ -42,17 +37,22 @@ services:
     image: redis:7
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
 
   minio:
     restart: unless-stopped
     image: elestio/minio:latest
     command: server /data --console-address :9001
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${IM_MINIO_ROOT_USER:?必须设置 IM_MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${IM_MINIO_ROOT_PASSWORD:?必须设置 IM_MINIO_ROOT_PASSWORD}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      # 只绑本机：对象存储里有全部附件与聊天归档，绝不能直接暴露到公网
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
 
@@ -61,6 +61,10 @@ services:
     image: livekit/livekit-server:latest
     command: --config /etc/livekit.yaml
     network_mode: host
+    environment:
+      # LiveKit 用 LIVEKIT_KEYS 覆盖配置文件里的 keys 段，
+      # 于是「签发 token 的 gateway」和「校验 token 的 SFU」共用同一份密钥（单一来源）。
+      LIVEKIT_KEYS: "${IM_LIVEKIT_API_KEY:?必须设置 IM_LIVEKIT_API_KEY}: ${IM_LIVEKIT_API_SECRET:?必须设置 IM_LIVEKIT_API_SECRET}"
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
 
@@ -69,7 +73,7 @@ services:
   # 两者都监听 3478/UDP，**不可同时启用**。若坚持用外部 coturn，请：
   #   1) 注释掉 livekit.yaml 里的整段 turn；
   #   2) 取消下面 coturn 的注释，并把 turnserver.conf 的 external-ip 改成你的公网 IP；
-  #   3) 在 livekit.yaml 的 rtc 段补 turn_servers 指向该 coturn（username/credential 用 imuser/impass）。
+  #   3) 在 livekit.yaml 的 rtc 段补 turn_servers 指向该 coturn。
   #
   # coturn:
   #   restart: unless-stopped
@@ -86,23 +90,28 @@ services:
     image: im-server:latest
     environment:
       IM_ROLE: logic
+      # 角色已知时只校验本角色用到的密钥（见 config.CheckSecrets）
+      IM_ENV: production
       IM_MYSQL_HOST: mysql
-      IM_MYSQL_PASSWORD: root123
+      IM_MYSQL_PASSWORD: ${IM_MYSQL_PASSWORD:?}
       IM_REDIS_ADDR: redis:6379
-      IM_JWT_SECRET: ${IM_JWT_SECRET:-dev-secret-change-me}
+      IM_JWT_SECRET: ${IM_JWT_SECRET:?必须设置 IM_JWT_SECRET（登录令牌签名密钥）}
       IM_STORAGE_ENDPOINT: minio:9000
-      IM_STORAGE_ACCESS_KEY: minioadmin
-      IM_STORAGE_SECRET_KEY: minioadmin
+      IM_STORAGE_ACCESS_KEY: ${IM_MINIO_ROOT_USER:?}
+      IM_STORAGE_SECRET_KEY: ${IM_MINIO_ROOT_PASSWORD:?}
       IM_STORAGE_BUCKET: im-attachments
       IM_STORAGE_PATH_STYLE: "true"
-      IM_LIVEKIT_API_KEY: devkey
-      IM_LIVEKIT_API_SECRET: devsecret-devsecret-devsecret-devsecre
+      # 多副本部署时必须给每个实例设置不同的 IM_NODE_ID，否则雪花 ID 会碰撞
+      IM_NODE_ID: ${IM_LOGIC_NODE_ID:-2}
     ports:
       - "10002:10002"
     depends_on:
       mysql:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      # 只等容器起来，不等 healthcheck：对象存储的就绪由 logic 启动时的重试窗口兜底
+      minio:
         condition: service_started
 
   admin:
@@ -110,18 +119,22 @@ services:
     image: im-server:latest
     environment:
       IM_ROLE: admin
+      IM_ENV: production
       IM_MYSQL_HOST: mysql
-      IM_MYSQL_PASSWORD: root123
+      IM_MYSQL_PASSWORD: ${IM_MYSQL_PASSWORD:?}
       IM_REDIS_ADDR: redis:6379
-      IM_ADMIN_TOKEN: ${IM_ADMIN_TOKEN:-dev-admin-token}
+      IM_ADMIN_TOKEN: ${IM_ADMIN_TOKEN:?必须设置 IM_ADMIN_TOKEN（管理后台令牌）}
       IM_STORAGE_ENDPOINT: minio:9000
-      IM_STORAGE_ACCESS_KEY: minioadmin
-      IM_STORAGE_SECRET_KEY: minioadmin
+      IM_STORAGE_ACCESS_KEY: ${IM_MINIO_ROOT_USER:?}
+      IM_STORAGE_SECRET_KEY: ${IM_MINIO_ROOT_PASSWORD:?}
       IM_STORAGE_PATH_STYLE: "true"
     ports:
-      - "10003:10003"
+      # 管理后台能重置任意用户密码、改站点配置，默认只绑本机
+      - "127.0.0.1:10003:10003"
     depends_on:
       mysql:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   gateway:
@@ -129,17 +142,22 @@ services:
     image: im-server:latest
     environment:
       IM_ROLE: gateway
+      IM_ENV: production
       IM_MYSQL_HOST: mysql
-      IM_MYSQL_PASSWORD: root123
+      IM_MYSQL_PASSWORD: ${IM_MYSQL_PASSWORD:?}
       IM_REDIS_ADDR: redis:6379
-      IM_JWT_SECRET: ${IM_JWT_SECRET:-dev-secret-change-me}
+      IM_JWT_SECRET: ${IM_JWT_SECRET:?}
+      # 真正签发 LiveKit token 的是 gateway，因此密钥必须给它（旧版本错发给了 logic）
+      IM_LIVEKIT_API_KEY: ${IM_LIVEKIT_API_KEY:?}
+      IM_LIVEKIT_API_SECRET: ${IM_LIVEKIT_API_SECRET:?}
+      IM_NODE_ID: ${IM_GATEWAY_NODE_ID:-1}
     ports:
       - "10001:10001"
     depends_on:
       mysql:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   mysql-data:

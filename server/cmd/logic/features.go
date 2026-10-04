@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 
 	"im/internal/archive"
 	"im/internal/pb"
+	"im/internal/storage"
 	"im/internal/store"
 )
 
@@ -330,7 +332,8 @@ func (a *apiv1) history(w http.ResponseWriter, r *http.Request, uid string) {
 // ---------- 对象存储 ----------
 
 func (a *apiv1) uploadToken(w http.ResponseWriter, r *http.Request, uid string) {
-	if a.minio == nil {
+	objects := a.objects.Get()
+	if objects == nil {
 		fail(w, 503, errors.New("object storage unavailable"))
 		return
 	}
@@ -346,7 +349,7 @@ func (a *apiv1) uploadToken(w http.ResponseWriter, r *http.Request, uid string) 
 	default:
 		req.Kind = "file"
 	}
-	key, putURL, err := a.minio.PresignPut(req.Kind)
+	key, putURL, err := objects.PresignPut(req.Kind)
 	if err != nil {
 		fail(w, 500, err)
 		return
@@ -354,17 +357,32 @@ func (a *apiv1) uploadToken(w http.ResponseWriter, r *http.Request, uid string) 
 	writeJSON(w, 200, map[string]string{"key": key, "put_url": putURL})
 }
 
-func (a *apiv1) download(w http.ResponseWriter, r *http.Request, uid string) {
-	if a.minio == nil {
+// download 凭「短时票据」换取预签名地址并 302。
+//
+// 这里不校验登录态：票据本身就是这次下载的授权凭证，而票据由
+// /v1/attachments/ticket 在完成对象级授权（canViewObject）后签发。
+// 之所以不能要求 Authorization 头：客户端「下载」按钮会把地址交给系统浏览器 openUrl。
+//
+// 安全要点：
+//   - key 必须命中 storage.ValidObjectKey 白名单 —— 归档对象（archive/...）不在白名单，
+//     因此曾经「按日期 + 会话 ID 推导 key 就能拖走任意会话归档」的路径已关闭；
+//   - 票据与 key 绑定且 10 分钟过期，无法挪用到其它对象，也无法当登录凭证使用。
+func (a *apiv1) download(w http.ResponseWriter, r *http.Request) {
+	objects := a.objects.Get()
+	if objects == nil {
 		fail(w, 503, errors.New("object storage unavailable"))
 		return
 	}
 	key := r.URL.Query().Get("key")
-	if key == "" {
-		fail(w, 400, errors.New("missing key"))
+	if !storage.ValidObjectKey(key) {
+		fail(w, 400, errors.New("key 非法"))
 		return
 	}
-	url, err := a.minio.PresignGet(key, 1*time.Hour)
+	if err := a.checkTicket(key, r.URL.Query().Get("ticket")); err != nil {
+		fail(w, 403, err)
+		return
+	}
+	url, err := objects.PresignGet(key, 1*time.Hour)
 	if err != nil {
 		fail(w, 500, err)
 		return
@@ -749,9 +767,8 @@ func (a *apiv1) deleteMoment(w http.ResponseWriter, r *http.Request, uid string)
 // ---------- 聊天记录归档（每日 03:00 归档前一天，写入对象存储） ----------
 
 func (a *apiv1) startArchiver() {
-	if a.minio == nil {
-		return
-	}
+	// 不再要求启动时对象存储已就绪：每天触发时再取句柄，
+	// 存储中途恢复后归档会自动继续，而不是像早期实现那样永久停摆。
 	go func() {
 		for {
 			now := time.Now()
@@ -759,9 +776,16 @@ func (a *apiv1) startArchiver() {
 			if !next.After(now) {
 				next = next.Add(24 * time.Hour)
 			}
-			time.Sleep(next.Sub(now))
-			day := now.AddDate(0, 0, -1).Format("20060102")
-			archive.ArchiveDay(a.db.DB, a.minio, day)
+			time.Sleep(time.Until(next))
+			// 用「醒来时刻」算昨天。早期实现用的是进入本轮循环前捕获的 now，
+			// 导致每天都比预期晚一天归档（10/3 凌晨归档的是 10/1 的数据）。
+			day := time.Now().AddDate(0, 0, -1).Format("20060102")
+			objects := a.objects.Get()
+			if objects == nil {
+				log.Printf("[archive] 对象存储不可用，跳过 %s 的归档", day)
+				continue
+			}
+			archive.ArchiveDay(a.db.DB, objects, day)
 		}
 	}()
 }

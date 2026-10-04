@@ -16,9 +16,15 @@ import (
 
 	"im/internal/hub"
 	"im/internal/pb"
+	"im/internal/storage"
 )
 
 const pullLimit = 200
+
+// ErrNotMember 调用方不是会话成员。
+// 单独定义成哨兵错误，让上层（gateway）能把"不是成员"和其它失败区分开，
+// 回给客户端一个可判定的错误码，而不是只写日志。
+var ErrNotMember = errors.New("not a member of conversation")
 
 // Snowflake 简易雪花 ID：毫秒时间戳 << 22 | 节点 << 12 | 序列
 type Snowflake struct {
@@ -204,27 +210,36 @@ func (s *Service) Send(ctx context.Context, fromUID string, m *pb.MsgSend) (stri
 		return "", 0, err
 	}
 
-	msgID := s.ID.Next()
 	sentAt := time.Now().UnixMilli()
 
 	attJSON, _ := json.Marshal(m.Attachment)
 	if m.Attachment == nil {
 		attJSON = []byte("{}")
 	}
+	// 附件只记录对象 key（客户端把 key 放在 Attachment.Url 字段里），
+	// 供下载时做「这个 key 属于调用方可见的会话吗」的授权判断。
+	attKey := ""
+	if m.Attachment != nil && storage.ValidObjectKey(m.Attachment.GetUrl()) {
+		attKey = m.Attachment.GetUrl()
+	}
 	mentionJSON, _ := json.Marshal(m.MentionUids)
 
-	// 分配 seq 并落库。撞 message 主键说明 Redis 计数器落后于 DB（如 Redis 曾被清空），
-	// NextSeq 下一轮会以 DB MAX 为下界重新取号，因此这里重试即可自愈。
+	// 分配 seq 并落库。
+	// message 有两个唯一键：PK(conversation_id, seq) 与 uk_msg_id(server_msg_id)，
+	// 两者都要能自愈，因此**每轮重试都重新生成 msgID**：
+	//   - 撞 PK：Redis 计数器落后于 DB（如 Redis 被清空），NextSeq 下轮以 DB MAX 为下界重取；
+	//   - 撞 uk_msg_id：多副本下雪花 ID 可能重复，必须换 ID 而不是拿同一个 ID 反复重试。
 	var seq uint64
 	for attempt := 0; ; attempt++ {
+		msgID := s.ID.Next()
 		var err error
 		seq, err = s.NextSeq(ctx, convID)
 		if err != nil {
 			return "", 0, err
 		}
-		stage, err := s.insertMessage(ctx, fromUID, m, msgID, seq, sentAt, string(attJSON), string(mentionJSON))
+		stage, err := s.insertMessage(ctx, fromUID, m, msgID, seq, sentAt, string(attJSON), string(mentionJSON), attKey)
 		if err == nil {
-			break
+			return s.finishSend(ctx, fromUID, m, msgID, seq, sentAt)
 		}
 		if attempt >= 3 {
 			return "", 0, err
@@ -239,11 +254,15 @@ func (s *Service) Send(ctx context.Context, fromUID string, m *pb.MsgSend) (stri
 			}
 			return "", 0, err
 		}
-		// stageMessage：seq 冲突，重试重新取号
+		// stageMessage：seq 或 server_msg_id 冲突，重试重新取号 + 换 ID
 	}
+}
 
+// finishSend 落库成功后组帧并投递给会话全部成员（含发送者其他端），跨进程只广播一次。
+// 投递失败时消息已在库里，返回 err 让调用方不回 ACK，客户端重试会命中幂等键拿到同一结果。
+func (s *Service) finishSend(ctx context.Context, fromUID string, m *pb.MsgSend, msgID string, seq uint64, sentAt int64) (string, uint64, error) {
 	notify := &pb.MsgNotify{
-		ConversationId: convID,
+		ConversationId: m.ConversationId,
 		Seq:            seq,
 		ServerMsgId:    msgID,
 		FromUid:        fromUID,
@@ -254,8 +273,7 @@ func (s *Service) Send(ctx context.Context, fromUID string, m *pb.MsgSend) (stri
 		MentionUids:    m.MentionUids,
 	}
 	frame := &pb.Frame{Body: &pb.Frame_MsgNotify{MsgNotify: notify}}
-	// 投递给会话所有成员（含发送者其他端）；跨进程只广播一次
-	uids, err := s.members(ctx, convID)
+	uids, err := s.members(ctx, m.ConversationId)
 	if err != nil {
 		return msgID, seq, err
 	}
@@ -397,18 +415,19 @@ const (
 	stageClientMap
 )
 
-// insertMessage 在一个事务里写入 message 与幂等映射，返回失败所在的阶段
+// insertMessage 在一个事务里写入 message 与幂等映射，返回失败所在的阶段。
+// attKey 为附件对象 key（无附件时为空串），单独成列并建索引，供下载授权判断使用。
 func (s *Service) insertMessage(ctx context.Context, fromUID string, m *pb.MsgSend,
-	msgID string, seq uint64, sentAt int64, attJSON, mentionJSON string) (int, error) {
+	msgID string, seq uint64, sentAt int64, attJSON, mentionJSON, attKey string) (int, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return stageMessage, err
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(ctx,
-		`INSERT INTO message(server_msg_id, conversation_id, seq, from_uid, msg_type, text, attachment, mention_uids, sent_at)
-		 VALUES(?,?,?,?,?,?,?,?,?)`,
-		msgID, m.ConversationId, seq, fromUID, int(m.MsgType), m.Text, attJSON, mentionJSON, sentAt); err != nil {
+		`INSERT INTO message(server_msg_id, conversation_id, seq, from_uid, msg_type, text, attachment, mention_uids, sent_at, attachment_key)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		msgID, m.ConversationId, seq, fromUID, int(m.MsgType), m.Text, attJSON, mentionJSON, sentAt, nullIfEmpty(attKey)); err != nil {
 		return stageMessage, err
 	}
 	if m.ClientMsgId != "" {
@@ -422,6 +441,14 @@ func (s *Service) insertMessage(ctx context.Context, fromUID string, m *pb.MsgSe
 		return stageMessage, err
 	}
 	return stageMessage, nil
+}
+
+// nullIfEmpty 空串写成 NULL，避免 attachment_key 索引里塞满空串
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // lookupClientMsg 幂等键已存在时回读其结果
@@ -454,7 +481,7 @@ func (s *Service) assertMember(ctx context.Context, uid, convID string) error {
 		return err
 	}
 	if n == 0 {
-		return fmt.Errorf("not a member of conversation %s", convID)
+		return fmt.Errorf("%w: %s", ErrNotMember, convID)
 	}
 	return nil
 }

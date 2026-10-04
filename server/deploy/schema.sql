@@ -14,7 +14,9 @@ CREATE TABLE IF NOT EXISTS `user` (
   `created_at`    BIGINT       NOT NULL,
   PRIMARY KEY (`uid`),
   UNIQUE KEY `uk_username` (`username`),
-  UNIQUE KEY `uk_yid` (`yid`)
+  UNIQUE KEY `uk_yid` (`yid`),
+  -- 头像按 key 反查（附件下载授权用）
+  KEY `idx_avatar_url` (`avatar_url`(191))
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS `friend` (
@@ -62,8 +64,12 @@ CREATE TABLE IF NOT EXISTS `message` (
   `attachment`      TEXT,
   `mention_uids`    TEXT,
   `sent_at`         BIGINT      NOT NULL,
+  -- 附件对象 key（单独成列 + 索引）：下载授权要按 key 反查「调用方是否在该会话里」
+  `attachment_key`  VARCHAR(160) NULL,
   PRIMARY KEY (`conversation_id`, `seq`),
-  UNIQUE KEY `uk_msg_id` (`server_msg_id`)
+  UNIQUE KEY `uk_msg_id` (`server_msg_id`),
+  KEY `idx_attachment_key` (`attachment_key`),
+  KEY `idx_sent_at` (`sent_at`)
 ) ENGINE=InnoDB;
 
 -- 客户端消息幂等去重表
@@ -122,8 +128,10 @@ CREATE TABLE IF NOT EXISTS `moment_comment` (
 
 -- 用户封禁（管理后台）
 CREATE TABLE IF NOT EXISTS `user_state` (
-  `uid`      VARCHAR(32) NOT NULL,
-  `disabled` TINYINT     NOT NULL DEFAULT 0,
+  `uid`           VARCHAR(32) NOT NULL,
+  `disabled`      TINYINT     NOT NULL DEFAULT 0,
+  -- 令牌版本：改密/重置/封禁时递增，使已签发的 JWT 立即失效（撤销）
+  `token_version` BIGINT      NOT NULL DEFAULT 0,
   PRIMARY KEY (`uid`)
 ) ENGINE=InnoDB;
 

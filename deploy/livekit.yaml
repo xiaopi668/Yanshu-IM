@@ -20,7 +20,11 @@ turn:
   relay_range_start: 49160
   relay_range_end: 49200
 
-keys:
-  devkey: devsecret-devsecret-devsecret-devsecre
+# keys 由容器环境变量 LIVEKIT_KEYS 提供（见 docker-compose.yml）。
+# 这样「gateway 签发 token 用的密钥」与「SFU 校验 token 用的密钥」是同一份，
+# 不会再出现配置文件、compose、代码默认值三份各不相同的副本。
+# 若不经 compose 裸跑，在这里显式写上：
+# keys:
+#   <api_key>: <api_secret>
 logging:
   level: info

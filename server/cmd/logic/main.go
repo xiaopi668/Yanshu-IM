@@ -23,18 +23,23 @@ import (
 	"im/internal/siteconf"
 	"im/internal/storage"
 	"im/internal/store"
+	"im/internal/userstate"
 )
 
 type apiv1 struct {
-	cfg   *config.Config
-	db    *store.DB
-	msg   *messaging.Service
-	minio *storage.ObjectStore
-	hub   *hub.Hub
-	rdb   *redis.Client
+	cfg *config.Config
+	db  *store.DB
+	msg *messaging.Service
+	// objects 对象存储句柄：可能晚于进程就绪，读方一律走 objects.Get()
+	objects *storage.Ref
+	hub     *hub.Hub
+	rdb     *redis.Client
 }
 
 var yidRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{4,19}$`)
+
+// defaultLogicNodeID 单实例部署时的雪花节点号（多副本必须用 IM_NODE_ID 区分）
+const defaultLogicNodeID = 2
 
 func main() {
 	cfg := config.Load()
@@ -51,13 +56,19 @@ func main() {
 	h := hub.New()
 	// 接入 Redis 总线：logic 自身不持有 WS 连接，只发布（好友/群事件推给 gateway）
 	h.AttachBus(context.Background(), rdb, false)
-	msgSvc := messaging.New(sqldb, rdb, h, 2)
-	minioSvc, err := storage.NewObjectStore(cfg)
-	if err != nil {
-		log.Printf("[logic] object storage unavailable (attachments disabled): %v", err)
+	nodeID := cfg.NodeID
+	if nodeID == 0 {
+		nodeID = defaultLogicNodeID
+		log.Printf("[logic] IM_NODE_ID 未设置，使用默认节点号 %d；多副本部署时必须给每个实例显式设置不同值", nodeID)
 	}
+	msgSvc := messaging.New(sqldb, rdb, h, nodeID)
 
-	a := &apiv1{cfg: cfg, db: db, msg: msgSvc, minio: minioSvc, hub: h, rdb: rdb}
+	objects := &storage.Ref{}
+	a := &apiv1{cfg: cfg, db: db, msg: msgSvc, objects: objects, hub: h, rdb: rdb}
+	// 对象存储后台就绪：绝不阻塞 HTTP 监听。
+	// 曾经为了等 MinIO 在监听前重试，结果存储一挂整个 API 就长时间不可用 ——
+	// 附件不可用不该拖垮登录、消息、好友这些与存储无关的功能。
+	go storage.ConnectWithRetry(cfg, objects, nil)
 	a.startArchiver()
 
 	mux := http.NewServeMux()
@@ -73,7 +84,11 @@ func main() {
 	mux.Handle("GET /v1/conversations/{id}/members", a.authed(a.listMembers))
 	mux.Handle("GET /v1/conversations/{id}/history", a.authed(a.history))
 	mux.Handle("POST /v1/upload-token", a.authed(a.uploadToken))
-	mux.Handle("GET /v1/download", a.authed(a.download))
+	// 下载只认「短时票据」：票据是 HMAC 签名、与单个对象 key 绑定、10 分钟过期。
+	// 之所以不挂 authed，是因为按钮会在系统浏览器里 openUrl，带不上 Authorization 头；
+	// 票据本身就是这次下载的授权凭证，登录 JWT 不再出现在任何 URL 里。
+	mux.HandleFunc("GET /v1/download", a.download)
+	mux.Handle("POST /v1/attachments/ticket", a.authed(a.attachmentTicket))
 	// 二期：雁书号
 	mux.Handle("GET /v1/users/search", a.authed(a.searchUser))
 	// 四期：站点配置 / 邮箱验证码 / OIDC
@@ -81,6 +96,8 @@ func main() {
 	mux.HandleFunc("POST /v1/email/send-code", a.sendEmailCode)
 	mux.HandleFunc("GET /v1/oidc/{name}/authorize", a.oidcAuthorize)
 	mux.HandleFunc("GET /v1/oidc/{name}/callback", a.oidcCallback)
+	// OIDC 授权成功后的落地页（token 走 fragment，见 oidcDonePage）
+	mux.HandleFunc("GET /oidc-done", a.oidcDonePage)
 	mux.Handle("PUT /v1/me/yid", a.authed(a.changeYid))
 	mux.Handle("PUT /v1/me", a.authed(a.updateMe))
 	// 二期：通讯录
@@ -145,14 +162,29 @@ type authedHandler func(w http.ResponseWriter, r *http.Request, uid string)
 
 func (a *apiv1) authed(next authedHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 只认 Authorization 头：query token 会进入访问日志、Referer、浏览器历史，
+		// 而登录 token 有 7 天有效期，一旦进 URL 就等于长期泄露。附件下载改用短时票据。
 		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if tok == "" {
-			// 附件下载等场景允许 query token（URL 会存进消息历史）
-			tok = r.URL.Query().Get("token")
-		}
 		claims, err := auth.ParseToken(a.cfg.JWTSecret, tok)
 		if err != nil {
 			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+			return
+		}
+		// 封禁与令牌撤销：每个请求都校验。
+		// 缺了这一步，封禁对 REST 就是摆设（旧 JWT 照样能用 7 天），
+		// 管理员重置密码也切不断攻击者手上的会话。
+		st, err := userstate.Get(r.Context(), a.db.DB, a.rdb, claims.UID)
+		if err != nil {
+			// 查不到状态就拒绝：宁可短暂不可用，也不能让已封禁/已撤销的令牌继续通行
+			writeJSON(w, 503, map[string]string{"error": "account state unavailable"})
+			return
+		}
+		if st.Disabled {
+			writeJSON(w, 403, map[string]string{"error": "account disabled"})
+			return
+		}
+		if claims.Ver < st.TokenVersion {
+			writeJSON(w, 401, map[string]string{"error": "token revoked"})
 			return
 		}
 		next(w, r, claims.UID)
@@ -268,7 +300,8 @@ func (a *apiv1) register(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, errors.New("username taken"))
 		return
 	}
-	tok, _ := auth.MakeToken(a.cfg.JWTSecret, uid, "")
+	// 新账号版本 0（注册后立刻可用）
+	tok, _ := auth.MakeToken(a.cfg.JWTSecret, uid, "", 0)
 	writeJSON(w, 200, map[string]any{"uid": uid, "yid": yid, "token": tok})
 }
 
@@ -287,6 +320,15 @@ func (a *apiv1) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
+	// 人机验证必须前置到凭据比对之前：放在后面等于「猜对了密码才需要过验证」，
+	// 对撞库/爆破零防护（注册侧本来就是前置的）。
+	acfg := a.siteConf()
+	if acfg.TurnstileEnabled {
+		if err := a.checkTurnstile(acfg, req.TurnstileToken, clientIP(r, a.cfg.TrustProxy)); err != nil {
+			fail(w, 403, err)
+			return
+		}
+	}
 	var uid, hash string
 	err := a.db.QueryRow(`SELECT uid, password_hash FROM user WHERE username=? OR yid=?`,
 		req.Username, req.Username).Scan(&uid, &hash)
@@ -302,20 +344,17 @@ func (a *apiv1) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, errors.New("bad credentials"))
 		return
 	}
-	acfg := a.siteConf()
-	if acfg.TurnstileEnabled {
-		if err := a.checkTurnstile(acfg, req.TurnstileToken, clientIP(r, a.cfg.TrustProxy)); err != nil {
-			fail(w, 403, err)
-			return
-		}
+	// 封禁检查 + 取当前令牌版本（新签发的 token 必须带上它，否则立即被中间件判为已撤销）
+	st, err := userstate.Get(r.Context(), a.db.DB, a.rdb, uid)
+	if err != nil {
+		fail(w, 500, err)
+		return
 	}
-	// 封禁检查
-	var disabled int
-	if err := a.db.QueryRow(`SELECT disabled FROM user_state WHERE uid=?`, uid).Scan(&disabled); err == nil && disabled == 1 {
+	if st.Disabled {
 		fail(w, 403, errors.New("account disabled"))
 		return
 	}
-	tok, _ := auth.MakeToken(a.cfg.JWTSecret, uid, req.Platform)
+	tok, _ := auth.MakeToken(a.cfg.JWTSecret, uid, req.Platform, st.TokenVersion)
 	writeJSON(w, 200, map[string]string{"uid": uid, "token": tok})
 }
 
@@ -396,21 +435,49 @@ func (a *apiv1) searchUser(w http.ResponseWriter, r *http.Request, uid string) {
 
 // updateMe 修改个人资料（昵称等）
 func (a *apiv1) updateMe(w http.ResponseWriter, r *http.Request, uid string) {
+	// 用指针区分「没传」和「传了空串」，这样只改昵称、只改用户名、两个一起改都成立
 	var req struct {
-		Nickname string `json:"nickname"`
+		Nickname *string `json:"nickname"`
+		Username *string `json:"username"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, 400, err)
 		return
 	}
-	nick := strings.TrimSpace(req.Nickname)
-	if nick == "" {
-		fail(w, 400, errors.New("nickname required"))
+	if req.Nickname == nil && req.Username == nil {
+		fail(w, 400, errors.New("nickname 或 username 至少要传一个"))
 		return
 	}
-	if _, err := a.db.Exec(`UPDATE user SET nickname=? WHERE uid=?`, nick, uid); err != nil {
-		fail(w, 500, err)
-		return
+	if req.Nickname != nil {
+		nick := strings.TrimSpace(*req.Nickname)
+		if nick == "" {
+			fail(w, 400, errors.New("nickname 不能为空"))
+			return
+		}
+		if _, err := a.db.Exec(`UPDATE user SET nickname=? WHERE uid=?`, nick, uid); err != nil {
+			fail(w, 500, err)
+			return
+		}
+	}
+	// 用户名（登录名）可改；OIDC 自动建的 oidc_xxx_xxx 会留下一个难看的用户名，这里给改掉的口子
+	if req.Username != nil {
+		name := strings.TrimSpace(*req.Username)
+		if len([]rune(name)) < 3 {
+			fail(w, 400, errors.New("用户名至少 3 个字符"))
+			return
+		}
+		if strings.ContainsAny(name, " \t\r\n") {
+			fail(w, 400, errors.New("用户名不能包含空格"))
+			return
+		}
+		if _, err := a.db.Exec(`UPDATE user SET username=? WHERE uid=?`, name, uid); err != nil {
+			if strings.Contains(err.Error(), "uk_username") {
+				fail(w, 409, errors.New("用户名已被占用"))
+				return
+			}
+			fail(w, 500, err)
+			return
+		}
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }

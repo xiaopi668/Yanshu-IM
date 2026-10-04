@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -23,11 +24,64 @@ import (
 	"im/internal/pb"
 )
 
-const (
-	logicURL = "http://127.0.0.1:10002"
-	wsURL    = "ws://127.0.0.1:10001/ws"
-	adminURL = "http://127.0.0.1:10003"
+// 端点可用环境变量覆盖：本机 10001/10002 常被别的调试实例占着，
+// 覆盖后可把被测实例起在备用端口上跑同一套冒烟用例。
+var (
+	logicURL = envOr("SMOKE_LOGIC_URL", "http://127.0.0.1:10002")
+	wsURL    = envOr("SMOKE_WS_URL", "ws://127.0.0.1:10001/ws")
+	adminURL = envOr("SMOKE_ADMIN_URL", "http://127.0.0.1:10003")
 )
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// TestSmokeErrorFrame 验证「任何 C->S 请求失败都必须回一帧」这条契约。
+// 这是"静默丢消息"的根因：旧实现里发送失败只写服务端日志、不回应答，
+// 客户端只能永远停在"发送中"，既不知道失败也不会重发。
+func TestSmokeErrorFrame(t *testing.T) {
+	name := fmt.Sprintf("smokeerr%d", time.Now().UnixNano()%1_000_000_000)
+	code, reg := postJSON(t, logicURL+"/v1/register", "", map[string]string{"username": name, "password": "secret1"})
+	if code != 200 {
+		t.Fatalf("注册失败: %d %v", code, reg)
+	}
+	tok, _ := reg["token"].(string)
+	if tok == "" {
+		t.Fatalf("注册未返回 token: %v", reg)
+	}
+	c := dialAuthed(t, tok)
+	defer c.conn.Close()
+
+	// 1) 给一个自己不是成员的会话发消息 —— 必须回 not_member，并带上 client_msg_id
+	clientMsgID := "smoke-err-" + name
+	c.send(&pb.Frame{Body: &pb.Frame_MsgSend{MsgSend: &pb.MsgSend{
+		ClientMsgId: clientMsgID, ConversationId: "s_not_mine_not_mine",
+		MsgType: pb.MsgType_MSG_TEXT, Text: "x",
+	}}})
+	f := c.waitFor(5*time.Second, "MsgSend 失败应答", func(f *pb.Frame) bool { return f.GetError() != nil })
+	if e := f.GetError(); e.Code != "not_member" || e.RefClientMsgId != clientMsgID {
+		t.Fatalf("发送失败应答不符合预期: code=%q ref=%q msg=%q", e.Code, e.RefClientMsgId, e.Message)
+	}
+
+	// 2) 拉一个自己不是成员的会话 —— 同样要有应答
+	c.send(&pb.Frame{Body: &pb.Frame_MsgPullReq{MsgPullReq: &pb.MsgPullReq{
+		ConversationId: "s_not_mine_not_mine", AfterSeq: 0, Limit: 10,
+	}}})
+	f = c.waitFor(5*time.Second, "MsgPullReq 失败应答", func(f *pb.Frame) bool { return f.GetError() != nil })
+	if e := f.GetError(); e.Code != "not_member" {
+		t.Fatalf("拉取失败应答不符合预期: code=%q msg=%q", e.Code, e.Message)
+	}
+
+	// 3) 服务端不处理的帧类型也不能石沉大海
+	c.send(&pb.Frame{Body: &pb.Frame_MsgAck{MsgAck: &pb.MsgAck{ClientMsgId: "x"}}})
+	f = c.waitFor(5*time.Second, "未知帧应答", func(f *pb.Frame) bool { return f.GetError() != nil })
+	if e := f.GetError(); e.Code != "unsupported" {
+		t.Fatalf("未知帧应答不符合预期: code=%q msg=%q", e.Code, e.Message)
+	}
+}
 
 func postJSON(t *testing.T, url, token string, body any) (int, map[string]any) {
 	t.Helper()
@@ -371,11 +425,16 @@ func TestSmoke(t *testing.T) {
 	}
 	t.Log("✅ 登录 IP 限流生效（loopback 豁免，XFF 伪装 IP 正常计数）")
 
-	// ---- 封禁即时踢下线（gateway 每 30s 扫 disabled=1）----
+	// ---- 封禁即时踢下线（gateway 状态巡检）----
 	_, dis := postJSON(t, adminURL+"/admin/users/"+bob.uid+"/disable", "smoke-admin-token", nil)
 	if ok, _ := dis["ok"].(bool); !ok {
 		t.Fatalf("封禁失败: %v", dis)
 	}
+	// 封禁必须同时覆盖 REST：早期只在 WS 首帧校验，被封用户拿旧 JWT 还能拉历史/加好友
+	if c, _ := getJSON(t, logicURL+"/v1/me", bob.token); c != 403 {
+		t.Fatalf("封禁后 REST 仍可访问: %d（应 403）", c)
+	}
+	t.Log("✅ 封禁对 REST 生效（403）")
 	closed := false
 	deadline := time.Now().Add(50 * time.Second)
 	for time.Now().Before(deadline) {
@@ -392,4 +451,34 @@ func TestSmoke(t *testing.T) {
 	// 重新启用，避免残留脏数据
 	_, en := postJSON(t, adminURL+"/admin/users/"+bob.uid+"/enable", "smoke-admin-token", nil)
 	t.Logf("重新启用: %v", en)
+	if c, _ := getJSON(t, logicURL+"/v1/me", bob.token); c != 200 {
+		t.Fatalf("重新启用后旧 token 应恢复可用: %d（应 200）", c)
+	}
+	t.Log("✅ 重新启用后旧 token 恢复可用")
+
+	// ---- 令牌撤销：管理员重置密码 = 立即止损 ----
+	// 语义是「账号可能已泄露」：所有已签发的 JWT 必须当场失效，而不是等 7 天自然过期
+	newPass := "secret456"
+	_, rp := postJSON(t, adminURL+"/admin/users/"+bob.uid+"/reset-password", "smoke-admin-token",
+		map[string]any{"password": newPass})
+	if ok, _ := rp["ok"].(bool); !ok {
+		t.Fatalf("重置密码失败: %v", rp)
+	}
+	if c, _ := getJSON(t, logicURL+"/v1/me", bob.token); c != 401 {
+		t.Fatalf("重置密码后旧 token 仍可用: %d（应 401）", c)
+	}
+	t.Log("✅ 重置密码后旧 token 立即失效（401）")
+
+	// 新密码必须能正常登录，且拿到的 token 可用（别把正常用户也锁在门外）
+	c, loginNew := postJSON(t, logicURL+"/v1/login", "", map[string]any{
+		"username": "bob" + suffix, "password": newPass,
+	})
+	if c != 200 {
+		t.Fatalf("重置后新密码登录失败: %d %v", c, loginNew)
+	}
+	newToken, _ := loginNew["token"].(string)
+	if c, _ := getJSON(t, logicURL+"/v1/me", newToken); c != 200 {
+		t.Fatalf("重置后新 token 不可用: %d", c)
+	}
+	t.Log("✅ 重置后新密码可登录、新 token 可用")
 }

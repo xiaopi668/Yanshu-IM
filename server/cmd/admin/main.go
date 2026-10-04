@@ -23,16 +23,18 @@ import (
 	"im/internal/siteconf"
 	"im/internal/storage"
 	"im/internal/store"
+	"im/internal/userstate"
 )
 
 //go:embed admin.html
 var adminHTML []byte
 
 type admin struct {
-	cfg   *config.Config
-	db    *store.DB
-	minio *storage.ObjectStore
-	rdb   *redis.Client
+	cfg *config.Config
+	db  *store.DB
+	// objects 对象存储句柄：允许晚于进程就绪（由后台重试填充）
+	objects *storage.Ref
+	rdb     *redis.Client
 }
 
 func main() {
@@ -46,11 +48,10 @@ func main() {
 	}
 	migrate.Run(sqldb)
 	rdb := store.NewRedis(cfg.RedisAddr, cfg.RedisPass)
-	minioSvc, err := storage.NewObjectStore(cfg)
-	if err != nil {
-		log.Printf("[admin] object storage unavailable: %v", err)
-	}
-	a := &admin{cfg: cfg, db: store.Wrap(sqldb), minio: minioSvc, rdb: rdb}
+	// 后台等对象存储：不要因为它没起来就让管理后台整个不可用（后台大部分功能与存储无关）
+	objects := &storage.Ref{}
+	go storage.ConnectWithRetry(cfg, objects, nil)
+	a := &admin{cfg: cfg, db: store.Wrap(sqldb), objects: objects, rdb: rdb}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
@@ -162,6 +163,8 @@ func (a *admin) setState(w http.ResponseWriter, r *http.Request, v int) {
 		fail(w, 500, err)
 		return
 	}
+	// 主动失效状态缓存：否则 REST 侧最长要等缓存 TTL 才认这个封禁
+	userstate.Invalidate(r.Context(), a.rdb, uid)
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -187,6 +190,13 @@ func (a *admin) resetPassword(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, err)
 		return
 	}
+	// 重置密码的语义是「账号可能已泄露，立刻止损」：
+	// 递增令牌版本让所有已签发的 JWT 立即失效，在线连接也会在状态巡检时被踢掉。
+	if err := userstate.BumpTokenVersion(r.Context(), a.db.DB, uid); err != nil {
+		fail(w, 500, err)
+		return
+	}
+	userstate.Invalidate(r.Context(), a.rdb, uid)
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -215,7 +225,15 @@ func (a *admin) stats(w http.ResponseWriter, r *http.Request) {
 
 func (a *admin) archiveDayHandler(w http.ResponseWriter, r *http.Request) {
 	day := r.PathValue("day")
-	archive.ArchiveDay(a.db.DB, a.minio, day)
+	objects := a.objects.Get()
+	if objects == nil {
+		fail(w, 503, errors.New("object storage unavailable"))
+		return
+	}
+	if _, err := archive.ArchiveDay(a.db.DB, objects, day); err != nil {
+		fail(w, 500, err)
+		return
+	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 

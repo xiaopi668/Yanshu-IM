@@ -9,15 +9,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"im/internal/auth"
 	"im/internal/pb"
 	"im/internal/siteconf"
+	"im/internal/userstate"
 )
 
 // siteConf 当前站点配置（每次读库，配置变更即时生效）
@@ -89,17 +93,22 @@ func (a *apiv1) rateLimit(r *http.Request, bucket string, limit int64, window ti
 	if limit <= 0 {
 		return nil
 	}
-	ip := clientIP(r, a.cfg.TrustProxy)
-	if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
-		return nil
+	ip, fromProxy := clientIPTrusted(r, a.cfg.TrustProxy)
+	// loopback 豁免只给「直连本机」：本机开发与单测不必自我限流。
+	// 地址来自 X-Forwarded-For 时绝不豁免 —— 否则任何客户端加一个
+	// "X-Forwarded-For: 127.0.0.1" 就能把登录/注册/发码的限流整体关掉。
+	if !fromProxy {
+		if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
+			return nil
+		}
 	}
 	key := "im:rl:" + bucket + ":" + ip
-	n, err := a.rdb.Incr(r.Context(), key).Result()
+	// INCR 与 EXPIRE 必须原子：分两步做的话，进程若崩在中间会给该 IP 留下一个
+	// 永不过期的计数键，这个 IP 之后就被永久限流（也能被用来恶意锁死别人）。
+	n, err := rlScript.Run(r.Context(), a.rdb, []string{key}, window.Milliseconds()).Int64()
 	if err != nil {
+		// Redis 故障时放行：不能因为缓存挂了就让所有人登录失败
 		return nil
-	}
-	if n == 1 {
-		_ = a.rdb.Expire(r.Context(), key, window).Err()
 	}
 	if n > limit {
 		return errors.New("操作过于频繁，请稍后再试")
@@ -107,19 +116,43 @@ func (a *apiv1) rateLimit(r *http.Request, bucket string, limit int64, window ti
 	return nil
 }
 
+// rlScript 固定窗口计数：INCR 与 PEXPIRE 原子完成；
+// 另外对「已存在但没有 TTL」的键做自愈，避免历史遗留键永久锁死某个 IP。
+var rlScript = redis.NewScript(`
+local n = redis.call('INCR', KEYS[1])
+if n == 1 or redis.call('PTTL', KEYS[1]) < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return n
+`)
+
 func urlEscape(s string) string { return strings.ReplaceAll(s, "&", "%26") }
 
 // clientIP 取客户端 IP。仅在 IM_TRUST_PROXY=true 时信任 X-Forwarded-For，
 // 否则一律取直连地址，防止伪造该头绕过基于 IP 的限制。
 func clientIP(r *http.Request, trustProxy bool) string {
-	if v := r.Header.Get("X-Forwarded-For"); v != "" && trustProxy {
-		return strings.TrimSpace(strings.Split(v, ",")[0])
+	ip, _ := clientIPTrusted(r, trustProxy)
+	return ip
+}
+
+// clientIPTrusted 取客户端 IP，并说明该值是否来自代理头。
+// 取 X-Forwarded-For 的**最后一个**元素：直连的真实代理会把对端地址追加在末尾，
+// 客户端自己伪造的值只可能出现在前面；取第一个等于让攻击者随便指定自己的 IP。
+// 前提是「只信任一层自己的反代」，多层代理需改为按可信网段从右往左取。
+func clientIPTrusted(r *http.Request, trustProxy bool) (string, bool) {
+	if trustProxy {
+		if v := r.Header.Get("X-Forwarded-For"); v != "" {
+			parts := strings.Split(v, ",")
+			if ip := strings.TrimSpace(parts[len(parts)-1]); ip != "" {
+				return ip, true
+			}
+		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		return r.RemoteAddr, false
 	}
-	return host
+	return host, false
 }
 
 // checkTurnstile 站点开启 Turnstile 时校验 token
@@ -204,7 +237,8 @@ func checkRedirectURI(ours, got string, p *siteconf.OIDCProvider) error {
 // checkReturnTo 校验登录成功后浏览器的最终去向，必须与本站同源
 func checkReturnTo(base, got string) (string, error) {
 	if got == "" {
-		return base + "/", nil
+		// 缺省落在本站的令牌展示页（首页 / 是 404，token 在 fragment 里没人展示）
+		return base + "/oidc-done", nil
 	}
 	u, err := url.Parse(got)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
@@ -217,6 +251,58 @@ func checkReturnTo(base, got string) (string, error) {
 	u.Fragment = "" // token 走 fragment，避免与已有 fragment 冲突
 	return u.String(), nil
 }
+
+// oidcDonePage OIDC 授权成功后的落地页。
+// token 由 oidcCallback 放在 fragment 里回跳（fragment 不会发给服务端），只能用 JS 取出展示，
+// 用户复制后粘贴到客户端登录页完成登录。
+func (a *apiv1) oidcDonePage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.WriteString(w, oidcDoneHTML)
+}
+
+const oidcDoneHTML = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>雁书 · OIDC 登录</title>
+<style>
+body{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f5f6f8;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.card{background:#fff;border-radius:12px;padding:32px;max-width:560px;width:92%;box-shadow:0 2px 12px rgba(0,0,0,.08)}
+h1{font-size:18px;margin:0 0 16px}
+code{display:block;background:#f5f6f8;border:1px solid #e3e5e8;border-radius:6px;padding:10px;word-break:break-all;font-size:12px;margin:8px 0 16px}
+button{background:#2e7d32;color:#fff;border:0;border-radius:6px;padding:8px 16px;font-size:14px;cursor:pointer}
+.err{color:#c62828;font-size:14px}
+.hint{color:#555;font-size:13px;line-height:1.7;margin:6px 0}
+</style></head><body><div class="card">
+<h1>雁书 · OIDC 登录</h1>
+<div id="box" class="hint">正在读取令牌…</div>
+<script>
+(function () {
+  var m = /(?:^|[#?])token=([^&]+)/.exec(location.hash || "");
+  var box = document.getElementById("box");
+  if (!m) {
+    box.innerHTML = '<span class="err">未找到 token</span>' +
+      '<p class="hint">如果刚从身份提供商返回，请检查地址栏里 #token= 是否存在；' +
+      '也可能是授权 state 已过期（5 分钟），请重新点击「使用 XX 登录」。</p>';
+    return;
+  }
+  var t = decodeURIComponent(m[1]);
+  box.innerHTML = '<p class="hint">复制下面的令牌，粘贴到雁书客户端登录页的「OIDC Token」输入框，再点「完成 OIDC 登录」。</p>' +
+    '<code id="tok"></code><button id="btn">复制令牌</button><p class="hint" id="tip"></p>';
+  document.getElementById("tok").textContent = t;
+  document.getElementById("btn").onclick = function () {
+    var tip = document.getElementById("tip");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(
+        function () { tip.textContent = "已复制"; },
+        function () { tip.textContent = "复制失败，请手动选中上面的令牌复制"; });
+    } else {
+      tip.textContent = "请手动选中上面的令牌复制";
+    }
+  };
+})();
+</script>
+</div></body></html>
+`
 
 // oidcAuthorize 302 到身份提供商授权页
 func (a *apiv1) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -336,9 +422,11 @@ func (a *apiv1) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		yid := username
 		now := time.Now().UnixMilli()
 		hash, _ := auth.HashPassword(randHex(16)) // 随机密码（OIDC 登录不使用）
+		// yid_changed=1 的语义是「用户已主动改过雁书号」。OIDC 建号时 yid 还是自动生成的，
+		// 置 1 会让这个账号永远没有机会改成自己的号 —— 这正是「OIDC 之后改不了雁书号」的原因。
 		if _, err := a.db.Exec(
 			`INSERT INTO user(uid, username, password_hash, nickname, yid, yid_changed, email, created_at) VALUES(?,?,?,?,?,?,?,?)`,
-			uid, username, hash, nick, yid, 1, nullIfEmpty(email), now); err != nil {
+			uid, username, hash, nick, yid, 0, nullIfEmpty(email), now); err != nil {
 			fail(w, 500, err)
 			return
 		}
@@ -350,7 +438,17 @@ func (a *apiv1) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tok, _ := auth.MakeToken(a.cfg.JWTSecret, uid, "oidc")
+	// OIDC 登录同 HTTP 登录：取当前令牌版本签发，并尊重封禁状态
+	st, err := userstate.Get(r.Context(), a.db.DB, a.rdb, uid)
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	if st.Disabled {
+		fail(w, 403, errors.New("account disabled"))
+		return
+	}
+	tok, _ := auth.MakeToken(a.cfg.JWTSecret, uid, "oidc", st.TokenVersion)
 	// 回跳到发起登录时的页面，token 放 fragment（同源校验已在 authorize/callback 两处做过）
 	http.Redirect(w, r, returnURI+"#token="+tok+"&uid="+uid, http.StatusFound)
 }

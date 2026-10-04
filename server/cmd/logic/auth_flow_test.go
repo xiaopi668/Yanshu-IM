@@ -54,9 +54,9 @@ func TestCheckRedirectURI(t *testing.T) {
 }
 
 func TestCheckReturnTo(t *testing.T) {
-	// 缺省回本站首页
+	// 缺省落在本站的令牌展示页
 	got, err := checkReturnTo(base, "")
-	if err != nil || got != base+"/" {
+	if err != nil || got != base+"/oidc-done" {
 		t.Fatalf("got %q err %v", got, err)
 	}
 	// 同源

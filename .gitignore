@@ -8,3 +8,7 @@ client/.gradle
 .idea
 .zcodeignore
 .zcode/
+
+# 部署密钥（compose 强制必填，误提交等于泄露生产凭据）
+deploy/.env
+.env

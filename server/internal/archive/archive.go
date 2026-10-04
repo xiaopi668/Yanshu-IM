@@ -2,8 +2,11 @@
 package archive
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,7 +44,10 @@ func ArchiveDay(db *sql.DB, store *storage.ObjectStore, day string) (int, error)
 		if err != nil {
 			continue
 		}
-		key := "archive/" + day + "/" + p.convID + ".jsonl"
+		// key 用随机串而不是 <会话ID>：归档对象是整段聊天明文，
+		// 一旦对象存储被列举或 key 被推导，等于全站历史泄露。
+		// 具体 key 记录在 archive_log.object_key，管理后台照旧可查。
+		key := "archive/" + day + "/" + randToken() + ".jsonl"
 		if err := store.Upload(key, data); err != nil {
 			continue
 		}
@@ -77,6 +83,16 @@ func exportConv(db *sql.DB, convID string, from, to int64) ([]byte, error) {
 		b.WriteByte('\n')
 	}
 	return []byte(b.String()), nil
+}
+
+// randToken 16 字节随机 hex，作为归档对象的不可推导文件名
+func randToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// 取不到随机数时退化为时间戳，宁可文件名可预测也不要写失败
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b)
 }
 
 func dayStart(day string) int64 {

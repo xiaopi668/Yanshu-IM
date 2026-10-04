@@ -27,6 +27,9 @@ const pushChannel = "im:push"
 type Conn interface {
 	UID() string
 	Platform() string
+	// TokenVersion 建连时令牌里的版本号。账号改密/重置密码后服务端版本递增，
+	// 版本落后的连接会被 KickStale 断开，做到「撤销后即时下线」。
+	TokenVersion() int64
 	Send(f *pb.Frame) bool // 非阻塞，失败返回 false（由写循环负责断开）
 	Close()                // 主动断开（如账号被封禁）
 }
@@ -204,6 +207,36 @@ func (h *Hub) Kick(uid string) {
 	for _, c := range conns {
 		c.Close()
 	}
+}
+
+// OnlineUIDs 当前本进程在线的 uid 快照（账号状态巡检用）
+func (h *Hub) OnlineUIDs() []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]string, 0, len(h.conns))
+	for uid := range h.conns {
+		out = append(out, uid)
+	}
+	return out
+}
+
+// KickStale 断开该用户在本进程中「令牌版本落后于 minVer」的连接，返回踢掉的连接数。
+// 用于改密/重置密码/撤销令牌后让旧会话立即下线。
+func (h *Hub) KickStale(uid string, minVer int64) int {
+	h.mu.RLock()
+	conns := make([]Conn, 0, len(h.conns[uid]))
+	for _, c := range h.conns[uid] {
+		conns = append(conns, c)
+	}
+	h.mu.RUnlock()
+	n := 0
+	for _, c := range conns {
+		if c.TokenVersion() < minVer {
+			c.Close()
+			n++
+		}
+	}
+	return n
 }
 
 // OnlineCount 当前在线连接用户数（仅本进程）

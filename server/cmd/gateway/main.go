@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"log"
 	"net/http"
 	"sync"
@@ -23,7 +24,11 @@ import (
 	"im/internal/messaging"
 	"im/internal/pb"
 	"im/internal/store"
+	"im/internal/userstate"
 )
+
+// defaultGatewayNodeID 单实例部署时的雪花节点号（多副本必须用 IM_NODE_ID 区分）
+const defaultGatewayNodeID = 1
 
 const (
 	writeTimeout  = 10 * time.Second
@@ -38,18 +43,21 @@ const (
 // conn 一条连接。写操作统一收敛到 writeLoop，避免多协程并发写同一 websocket，
 // 也避免群发时被慢连接的同步写阻塞住发送方的读循环。
 type conn struct {
-	c         *websocket.Conn
-	uid       string
-	platform  string
-	connID    string
-	hub       *hub.Hub
-	sendq     chan []byte
-	done      chan struct{}
-	closeOnce sync.Once
+	c        *websocket.Conn
+	uid      string
+	platform string
+	connID   string
+	// tokenVersion 建连时令牌里的版本号，用于改密/撤销后即时下线
+	tokenVersion int64
+	hub          *hub.Hub
+	sendq        chan []byte
+	done         chan struct{}
+	closeOnce    sync.Once
 }
 
-func (c *conn) UID() string      { return c.uid }
-func (c *conn) Platform() string { return c.platform }
+func (c *conn) UID() string         { return c.uid }
+func (c *conn) Platform() string    { return c.platform }
+func (c *conn) TokenVersion() int64 { return c.tokenVersion }
 
 // Send 非阻塞入队；队列满说明消费不过来，直接断开该连接，
 // 客户端重连后会按 seq 增量拉补，不会丢消息。
@@ -113,6 +121,7 @@ type server struct {
 	hub  *hub.Hub
 	msg  *messaging.Service
 	db   *sql.DB
+	rdb  *redis.Client
 	upgr websocket.Upgrader
 	call *call.Manager
 }
@@ -130,10 +139,15 @@ func main() {
 	h := hub.New()
 	// 接入 Redis 总线：gateway 持有 WS 连接，既要广播也要订阅其他进程的投递
 	h.AttachBus(context.Background(), rdb, true)
-	msgSvc := messaging.New(db, rdb, h, 1)
+	nodeID := cfg.NodeID
+	if nodeID == 0 {
+		nodeID = defaultGatewayNodeID
+		log.Printf("[gateway] IM_NODE_ID 未设置，使用默认节点号 %d；多副本部署时必须给每个实例显式设置不同值", nodeID)
+	}
+	msgSvc := messaging.New(db, rdb, h, nodeID)
 	callMgr := call.NewManager(cfg.LiveKitAPIKey, cfg.LiveKitAPISecret)
 	s := &server{
-		cfg: cfg, hub: h, msg: msgSvc, db: db, call: callMgr,
+		cfg: cfg, hub: h, msg: msgSvc, db: db, rdb: rdb, call: callMgr,
 		upgr: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
@@ -155,33 +169,34 @@ func main() {
 	// 通话邀请超时：清理超时未接听的邀请并向双方推 CALL_TIMEOUT
 	go s.callTimeoutLoop()
 	// 封禁即时生效：管理后台封禁只改库，不踢的话在线连接照常收发
-	go s.kickDisabledLoop()
+	go s.stateLoop()
 	log.Printf("[gateway] listening on %s", cfg.GatewayAddr)
 	log.Fatal(http.ListenAndServe(cfg.GatewayAddr, mux))
 }
 
-// kickDisabledLoop 周期扫描被封禁用户并踢下线。
-// 一次全表捞 disabled 名单（user_state 里只有异常账号，通常很小），只对确实在线的做踢除。
-func (s *server) kickDisabledLoop() {
-	t := time.NewTicker(30 * time.Second)
+// stateLoop 周期巡检在线连接所属账号的状态：
+//   - 被封禁 → 踢下线；
+//   - 令牌版本落后（管理员重置密码 / 撤销）→ 踢下线。
+//
+// 早期版本只扫 disabled=1 名单，且 HTTP 侧完全不校验，导致封禁对 REST 形同虚设。
+// 现在在线集合来自 hub（只有真实在线的 uid 才查），状态走 Redis 缓存，
+// 管理后台改状态时会主动失效缓存，因此撤销在 10s 内落到连接上。
+func (s *server) stateLoop() {
+	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
 	for range t.C {
-		rows, err := s.db.Query(`SELECT uid FROM user_state WHERE disabled=1`)
-		if err != nil {
-			continue
-		}
-		var uids []string
-		for rows.Next() {
-			var u string
-			if rows.Scan(&u) == nil {
-				uids = append(uids, u)
+		for _, uid := range s.hub.OnlineUIDs() {
+			st, err := userstate.Get(context.Background(), s.db, s.rdb, uid)
+			if err != nil {
+				continue
 			}
-		}
-		rows.Close()
-		for _, uid := range uids {
-			if s.hub.IsOnline(uid) {
+			if st.Disabled {
 				s.hub.Kick(uid)
 				log.Printf("[gateway] 封禁用户已踢下线 uid=%s", uid)
+				continue
+			}
+			if n := s.hub.KickStale(uid, st.TokenVersion); n > 0 {
+				log.Printf("[gateway] 令牌已撤销，踢下线 uid=%s conns=%d", uid, n)
 			}
 		}
 	}
@@ -258,13 +273,21 @@ func (s *server) handleWS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			c.uid, c.platform = claims.UID, ar.Platform
-			// 封禁检查
-			var disabled int
-			if err := s.db.QueryRowContext(r.Context(),
-				`SELECT disabled FROM user_state WHERE uid=?`, c.uid).Scan(&disabled); err == nil && disabled == 1 {
+			// 封禁 + 令牌撤销检查（与 HTTP 中间件同一套逻辑，共用 Redis 缓存）
+			st, err := userstate.Get(r.Context(), s.db, s.rdb, c.uid)
+			if err != nil {
+				c.Send(&pb.Frame{Body: &pb.Frame_AuthResp{AuthResp: &pb.AuthResp{Ok: false, Reason: "account state unavailable"}}})
+				return
+			}
+			if st.Disabled {
 				c.Send(&pb.Frame{Body: &pb.Frame_AuthResp{AuthResp: &pb.AuthResp{Ok: false, Reason: "account disabled"}}})
 				return
 			}
+			if claims.Ver < st.TokenVersion {
+				c.Send(&pb.Frame{Body: &pb.Frame_AuthResp{AuthResp: &pb.AuthResp{Ok: false, Reason: "token revoked"}}})
+				return
+			}
+			c.tokenVersion = claims.Ver
 			s.hub.Add(c.uid, c.connID, c)
 			log.Printf("[gateway] conn authed uid=%s conn=%s", c.uid, c.connID)
 			authed = true
@@ -292,6 +315,8 @@ func (s *server) handleFrame(ctx context.Context, c *conn, f *pb.Frame) {
 		msgID, seq, err := s.msg.Send(ctx, c.uid, m)
 		if err != nil {
 			log.Printf("[gateway] send err: %v", err)
+			// 必须回帧：否则客户端只能永远停在"发送中"，既不知道失败也不会重发
+			c.Send(errorFrame(m.ClientMsgId, errorCode(err), err.Error()))
 			return
 		}
 		c.Send(&pb.Frame{Body: &pb.Frame_MsgAck{MsgAck: &pb.MsgAck{
@@ -303,6 +328,7 @@ func (s *server) handleFrame(ctx context.Context, c *conn, f *pb.Frame) {
 		resp, err := s.msg.Pull(ctx, c.uid, p.ConversationId, p.AfterSeq, p.Limit)
 		if err != nil {
 			log.Printf("[gateway] pull err: %v", err)
+			c.Send(errorFrame("", errorCode(err), err.Error()))
 			return
 		}
 		c.Send(&pb.Frame{Body: &pb.Frame_MsgPullResp{MsgPullResp: resp}})
@@ -315,6 +341,28 @@ func (s *server) handleFrame(ctx context.Context, c *conn, f *pb.Frame) {
 		s.handleCallSignal(ctx, c, b.CallSignal)
 
 	default:
+		// 说不清楚的帧也要有应答，避免客户端在等一个永远不会来的结果
+		c.Send(errorFrame("", "unsupported", "unsupported frame type"))
+	}
+}
+
+// errorFrame 组装失败应答帧
+func errorFrame(refClientMsgID, code, msg string) *pb.Frame {
+	return &pb.Frame{Body: &pb.Frame_Error{Error: &pb.Error{
+		RefClientMsgId: refClientMsgID,
+		Code:           code,
+		Message:        msg,
+	}}}
+}
+
+// errorCode 把内部错误映射成客户端可判定的错误码。
+// 客户端只应依赖 code，message 仅供展示。
+func errorCode(err error) string {
+	switch {
+	case errors.Is(err, messaging.ErrNotMember):
+		return "not_member"
+	default:
+		return "send_failed"
 	}
 }
 

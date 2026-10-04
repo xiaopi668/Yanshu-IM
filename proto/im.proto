@@ -20,7 +20,18 @@ message Frame {
     MsgRead msg_read = 9;             // C->S 已读上报
     CallSignal call_signal = 10;      // 音视频通话信令（一期走消息通道）
     ContactEvent contact_event = 11;  // S->C 通讯录事件（好友申请/通过/拒绝）
+    Error error = 12;                 // S->C 失败应答（新增，字段号只增不改）
   }
+}
+
+// 失败应答。设计约束：**任何 C->S 请求失败，服务端都必须回一帧**。
+// 旧实现里发送失败只写服务端日志，客户端收不到任何应答，只能永远停在"发送中"，
+// 既不知道失败也不会重发 —— 这是"静默丢消息"的根因。
+// 老客户端不认字段 12 会走 Unknown 分支丢弃，不影响兼容。
+message Error {
+  string ref_client_msg_id = 1;  // 失败的请求对应的 client_msg_id（拉取类请求为空）
+  string code = 2;               // 机器可读错误码：not_member / send_failed / pull_failed / unsupported
+  string message = 3;            // 人类可读说明（用于 UI 提示，不要依赖它做判断）
 }
 
 // 通讯录事件（服务端推送）
@@ -64,7 +75,12 @@ enum MsgType {
 
 // 多媒体附件
 message Attachment {
-  string url = 1;                     // MinIO 下载地址（预签名）
+  // 对象存储 key（形如 image/20261003/<16位hex>），**不是**可直接访问的地址。
+  // 取用流程：POST /v1/attachments/ticket（带登录态）换短时票据，
+  //          再 GET /v1/download?key=..&ticket=..
+  // 绝不要把登录 JWT 或长期有效的预签名地址放进这个字段：
+  // 消息会广播给会话全部成员、写入 message.attachment 并进入聊天归档。
+  string url = 1;
   string name = 2;
   uint64 size = 3;
   string mime = 4;

@@ -8,7 +8,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/url"
+	"regexp"
+	"sync"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -16,6 +19,14 @@ import (
 
 	"im/internal/config"
 )
+
+// objectKeyRe 合法对象 key：PresignPut 生成 kind/YYYYMMDD/16位hex。
+// 严格白名单，避免把任意字符串（含 ../ 或完整 URL）拼进对象存储路径。
+var objectKeyRe = regexp.MustCompile(`^(image|file|audio|video)/[0-9]{8}/[0-9a-f]{16}$`)
+
+// ValidObjectKey 判断 key 是否为本服务生成的对象 key。
+// 逻辑层与消息层共用，保证「能写入的 key」与「能被引用的 key」是同一套规则。
+func ValidObjectKey(key string) bool { return objectKeyRe.MatchString(key) }
 
 // ObjectStore S3 兼容对象存储
 type ObjectStore struct {
@@ -42,6 +53,57 @@ func NewObjectStore(cfg *config.Config) (*ObjectStore, error) {
 		}
 	}
 	return &ObjectStore{client: client, bucket: cfg.StorageBucket}, nil
+}
+
+// Ref 线程安全的对象存储句柄。
+// 对象存储可能比进程晚就绪（MinIO 冷启动、重启、临时故障），所以句柄允许先为空、
+// 由后台重试填充：HTTP 服务不必为了等存储而阻塞启动，附件与归档也能在存储恢复后自动可用
+// —— 而不是像早期实现那样"启动失败一次就永久禁用"。
+type Ref struct {
+	mu sync.RWMutex
+	s  *ObjectStore
+}
+
+func (r *Ref) Get() *ObjectStore {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.s
+}
+
+func (r *Ref) Set(s *ObjectStore) {
+	r.mu.Lock()
+	r.s = s
+	r.mu.Unlock()
+}
+
+// ConnectWithRetry 后台重试直到对象存储可用（退避 2s→30s，不设上限）。
+// stop 为 nil 表示永不主动退出。前 5 次失败逐条打日志，之后每 20 次打一次，避免刷屏。
+func ConnectWithRetry(cfg *config.Config, ref *Ref, stop <-chan struct{}) {
+	backoff := 2 * time.Second
+	for attempt := 1; ; attempt++ {
+		svc, err := NewObjectStore(cfg)
+		if err == nil {
+			ref.Set(svc)
+			if attempt > 1 {
+				log.Printf("[storage] 对象存储已就绪（第 %d 次尝试）", attempt)
+			}
+			return
+		}
+		if attempt <= 5 || attempt%20 == 0 {
+			log.Printf("[storage] 对象存储尚不可用（第 %d 次尝试，%v 后重试）: %v", attempt, backoff, err)
+		}
+		select {
+		case <-stop:
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+		}
+	}
 }
 
 func bucketLookup(pathStyle bool) minio.BucketLookupType {

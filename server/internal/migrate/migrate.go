@@ -24,6 +24,23 @@ var statements = []string{
 	`ALTER TABLE group_info ADD COLUMN announcement MEDIUMTEXT NULL`,
 	// 用户邮箱
 	`ALTER TABLE user ADD COLUMN email VARCHAR(128) NULL`,
+	// 存量 OIDC 账号自愈：早期建号时误把 yid_changed 置 1，导致这些账号永远改不了雁书号。
+	// yid = username 说明号还是自动生成的（用户没动过），放开这一次机会。
+	// 普通注册用户的 yid_changed 本来就是 0，且 yid 是随机 ys 号 ≠ username，不受影响。
+	`UPDATE user SET yid_changed = 0 WHERE yid = username AND yid IS NOT NULL AND yid <> ''`,
+	// 附件对象 key 独立成列 + 索引：下载授权需要按 key 反查会话成员关系
+	`ALTER TABLE message ADD COLUMN attachment_key VARCHAR(160) NULL`,
+	`ALTER TABLE message ADD KEY idx_attachment_key (attachment_key)`,
+	`ALTER TABLE user ADD KEY idx_avatar_url (avatar_url(191))`,
+	// 归档与统计按时间范围扫描，缺索引会全表扫
+	`ALTER TABLE message ADD KEY idx_sent_at (sent_at)`,
+	// 存量消息回填 attachment_key：旧客户端把整条 "/v1/download?key=..&token=.." 存进了 attachment.url，
+	// 这里尽力抠出 key。抠不出来也无所谓 —— 授权判定失败就是 403，与留空等价，
+	// 但注意旧消息里的 token 已经随消息广播出去，只能靠改密/轮换密钥止损，无法追溯收回。
+	`UPDATE message SET attachment_key = SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(attachment,'key=',-1),'&',1),'"',1)
+	  WHERE attachment_key IS NULL AND attachment LIKE '%/v1/download?key=%'`,
+	// 令牌版本：支持「改密/重置/封禁后旧 JWT 立即失效」
+	`ALTER TABLE user_state ADD COLUMN token_version BIGINT NOT NULL DEFAULT 0`,
 }
 
 const lockName = "im:schema_migrate"

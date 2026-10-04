@@ -31,6 +31,15 @@
 
 任何一端的字段号/枚举值漂移都会让其中一边失败。
 
+## Attachment.url 的语义
+
+`Attachment.url` 承载的是**对象存储 key**（`image/20261003/<16位hex>`），不是可直接访问的地址。
+取用流程：`POST /v1/attachments/ticket`（带登录态）换短时票据 → `GET /v1/download?key=..&ticket=..`。
+
+原因：这个字段会被写进 `message.attachment`、广播给会话全部成员、并进入聊天归档。
+早期实现往里塞了 `/v1/download?key=..&token=<7天有效的登录 JWT>`，等于把发送者的账号凭证
+发给了每一个能看到这条消息的人。**任何"把长期凭证放进消息"的改动都不要再做。**
+
 ## 修改协议的步骤
 
 1. 改 `proto/im.proto`（**字段号只增不改，枚举值只增不删**，否则破坏兼容）

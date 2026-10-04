@@ -47,6 +47,9 @@ type Config struct {
 	RequireStrongSecrets bool
 	// 登录/注册按 IP 的限流窗口内允许的次数；<=0 表示关闭限流
 	AuthRateLimit int64
+	// 本进程的雪花 ID 节点号。多副本部署时每个实例必须不同，否则同一毫秒会生成相同 ID
+	// （消息撞 uk_msg_id、注册撞 user 主键、建群撞群 ID）。0 = 用按角色的默认值。
+	NodeID int64
 }
 
 func fromEnv(key, def string) string {
@@ -84,8 +87,14 @@ func Load() *Config {
 		RequireStrongSecrets: os.Getenv("IM_REQUIRE_STRONG_SECRETS") == "true" ||
 			os.Getenv("IM_ENV") == "production",
 		AuthRateLimit: int64(fromEnvInt("IM_AUTH_RATE_LIMIT", 60)),
+		NodeID:        int64(fromEnvInt("IM_NODE_ID", 0)),
 	}
 }
+
+// Role 当前进程角色。容器里由 entrypoint.sh 按 IM_ROLE 选择启动哪个二进制，
+// 这里用它来判断「本角色到底需要哪些密钥」——避免无关密钥没覆盖就拒绝启动。
+// 未设置时返回空串，表示角色未知。
+func (c *Config) Role() string { return os.Getenv("IM_ROLE") }
 
 // fromEnvInt 读取非负整数环境变量，非法值回落默认
 func fromEnvInt(key string, def int) int {
@@ -117,21 +126,30 @@ func splitList(s string) []string {
 	return out
 }
 
-// devSecrets 开发期默认凭据清单
+// devSecrets 开发期默认凭据清单。Roles 限定该密钥被哪些角色真正使用：
+// 之前不区分角色，导致 compose 里只注入了本角色所需密钥时（logic 只有 JWT、
+// admin 只有 admin token），一开 IM_ENV=production 三个服务全部拒绝启动。
 var devSecrets = []struct {
 	Env   string
 	Value string
+	Roles []string
 }{
-	{"IM_JWT_SECRET", DefaultJWTSecret},
-	{"IM_ADMIN_TOKEN", DefaultAdminToken},
-	{"IM_LIVEKIT_API_SECRET", DefaultLiveKitSecret},
+	{"IM_JWT_SECRET", DefaultJWTSecret, []string{"gateway", "logic"}},
+	{"IM_ADMIN_TOKEN", DefaultAdminToken, []string{"admin"}},
+	// 真正签发 LiveKit token 的是 gateway（call.NewManager），logic 只读不用
+	{"IM_LIVEKIT_API_SECRET", DefaultLiveKitSecret, []string{"gateway"}},
 }
 
 // CheckSecrets 校验是否仍在使用开发期默认密钥。
 // RequireStrongSecrets 时返回错误终止启动，否则打醒目告警。
 func (c *Config) CheckSecrets() error {
 	var weak []string
+	role := c.Role()
 	for _, s := range devSecrets {
+		// 角色已知且本角色用不到这个密钥：跳过，不因它没覆盖而拒绝启动
+		if role != "" && len(s.Roles) > 0 && !containsStr(s.Roles, role) {
+			continue
+		}
 		if c.secretOf(s.Env) == s.Value {
 			weak = append(weak, s.Env)
 		}
@@ -145,6 +163,15 @@ func (c *Config) CheckSecrets() error {
 	}
 	log.Printf("[config] 警告: %s", msg)
 	return nil
+}
+
+func containsStr(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Config) secretOf(env string) string {

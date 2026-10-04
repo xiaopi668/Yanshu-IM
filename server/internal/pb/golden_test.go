@@ -91,6 +91,11 @@ func goldenCases() []goldenCase {
 		{Name: "contact_accepted", Frame: &Frame{Body: &Frame_ContactEvent{ContactEvent: &ContactEvent{
 			Type: "accepted", RequestId: "r-1", FromUid: "u9", Yid: "alice01", Nickname: "Alice",
 		}}}},
+		// 失败应答是新加的"必须回帧"契约载体，纳入 golden 防止字段号漂移
+		{Name: "error_send_failed", Frame: &Frame{Body: &Frame_Error{Error: &Error{
+			RefClientMsgId: "cm-err-1", Code: "not_member",
+			Message: "not a member of conversation s_1_2",
+		}}}},
 	}
 }
 

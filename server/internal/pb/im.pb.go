@@ -158,6 +158,7 @@ type Frame struct {
 	//	*Frame_MsgRead
 	//	*Frame_CallSignal
 	//	*Frame_ContactEvent
+	//	*Frame_Error
 	Body          isFrame_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -299,6 +300,15 @@ func (x *Frame) GetContactEvent() *ContactEvent {
 	return nil
 }
 
+func (x *Frame) GetError() *Error {
+	if x != nil {
+		if x, ok := x.Body.(*Frame_Error); ok {
+			return x.Error
+		}
+	}
+	return nil
+}
+
 type isFrame_Body interface {
 	isFrame_Body()
 }
@@ -347,6 +357,10 @@ type Frame_ContactEvent struct {
 	ContactEvent *ContactEvent `protobuf:"bytes,11,opt,name=contact_event,json=contactEvent,proto3,oneof"` // S->C 通讯录事件（好友申请/通过/拒绝）
 }
 
+type Frame_Error struct {
+	Error *Error `protobuf:"bytes,12,opt,name=error,proto3,oneof"` // S->C 失败应答（新增，字段号只增不改）
+}
+
 func (*Frame_Heartbeat) isFrame_Body() {}
 
 func (*Frame_AuthReq) isFrame_Body() {}
@@ -369,6 +383,72 @@ func (*Frame_CallSignal) isFrame_Body() {}
 
 func (*Frame_ContactEvent) isFrame_Body() {}
 
+func (*Frame_Error) isFrame_Body() {}
+
+// 失败应答。设计约束：**任何 C->S 请求失败，服务端都必须回一帧**。
+// 旧实现里发送失败只写服务端日志，客户端收不到任何应答，只能永远停在"发送中"，
+// 既不知道失败也不会重发 —— 这是"静默丢消息"的根因。
+// 老客户端不认字段 12 会走 Unknown 分支丢弃，不影响兼容。
+type Error struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	RefClientMsgId string                 `protobuf:"bytes,1,opt,name=ref_client_msg_id,json=refClientMsgId,proto3" json:"ref_client_msg_id,omitempty"` // 失败的请求对应的 client_msg_id（拉取类请求为空）
+	Code           string                 `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`                                               // 机器可读错误码：not_member / send_failed / pull_failed / unsupported
+	Message        string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`                                         // 人类可读说明（用于 UI 提示，不要依赖它做判断）
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *Error) Reset() {
+	*x = Error{}
+	mi := &file_im_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Error) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Error) ProtoMessage() {}
+
+func (x *Error) ProtoReflect() protoreflect.Message {
+	mi := &file_im_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Error.ProtoReflect.Descriptor instead.
+func (*Error) Descriptor() ([]byte, []int) {
+	return file_im_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Error) GetRefClientMsgId() string {
+	if x != nil {
+		return x.RefClientMsgId
+	}
+	return ""
+}
+
+func (x *Error) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
+func (x *Error) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 // 通讯录事件（服务端推送）
 type ContactEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -384,7 +464,7 @@ type ContactEvent struct {
 
 func (x *ContactEvent) Reset() {
 	*x = ContactEvent{}
-	mi := &file_im_proto_msgTypes[1]
+	mi := &file_im_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -396,7 +476,7 @@ func (x *ContactEvent) String() string {
 func (*ContactEvent) ProtoMessage() {}
 
 func (x *ContactEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_im_proto_msgTypes[1]
+	mi := &file_im_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -409,7 +489,7 @@ func (x *ContactEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContactEvent.ProtoReflect.Descriptor instead.
 func (*ContactEvent) Descriptor() ([]byte, []int) {
-	return file_im_proto_rawDescGZIP(), []int{1}
+	return file_im_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ContactEvent) GetType() string {
@@ -462,7 +542,7 @@ type Heartbeat struct {
 
 func (x *Heartbeat) Reset() {
 	*x = Heartbeat{}
-	mi := &file_im_proto_msgTypes[2]
+	mi := &file_im_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -474,7 +554,7 @@ func (x *Heartbeat) String() string {
 func (*Heartbeat) ProtoMessage() {}
 
 func (x *Heartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_im_proto_msgTypes[2]
+	mi := &file_im_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -487,7 +567,7 @@ func (x *Heartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
 func (*Heartbeat) Descriptor() ([]byte, []int) {
-	return file_im_proto_rawDescGZIP(), []int{2}
+	return file_im_proto_rawDescGZIP(), []int{3}
 }
 
 type AuthReq struct {
@@ -501,7 +581,7 @@ type AuthReq struct {
 
 func (x *AuthReq) Reset() {
 	*x = AuthReq{}
-	mi := &file_im_proto_msgTypes[3]
+	mi := &file_im_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -513,7 +593,7 @@ func (x *AuthReq) String() string {
 func (*AuthReq) ProtoMessage() {}
 
 func (x *AuthReq) ProtoReflect() protoreflect.Message {
-	mi := &file_im_proto_msgTypes[3]
+	mi := &file_im_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -526,7 +606,7 @@ func (x *AuthReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthReq.ProtoReflect.Descriptor instead.
 func (*AuthReq) Descriptor() ([]byte, []int) {
-	return file_im_proto_rawDescGZIP(), []int{3}
+	return file_im_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *AuthReq) GetToken() string {
@@ -562,7 +642,7 @@ type AuthResp struct {
 
 func (x *AuthResp) Reset() {
 	*x = AuthResp{}
-	mi := &file_im_proto_msgTypes[4]
+	mi := &file_im_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -574,7 +654,7 @@ func (x *AuthResp) String() string {
 func (*AuthResp) ProtoMessage() {}
 
 func (x *AuthResp) ProtoReflect() protoreflect.Message {
-	mi := &file_im_proto_msgTypes[4]
+	mi := &file_im_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -587,7 +667,7 @@ func (x *AuthResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthResp.ProtoReflect.Descriptor instead.
 func (*AuthResp) Descriptor() ([]byte, []int) {
-	return file_im_proto_rawDescGZIP(), []int{4}
+	return file_im_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *AuthResp) GetOk() bool {
@@ -613,21 +693,26 @@ func (x *AuthResp) GetMaxSeqs() map[string]uint64 {
 
 // 多媒体附件
 type Attachment struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"` // MinIO 下载地址（预签名）
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Size          uint64                 `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
-	Mime          string                 `protobuf:"bytes,4,opt,name=mime,proto3" json:"mime,omitempty"`
-	Width         uint32                 `protobuf:"varint,5,opt,name=width,proto3" json:"width,omitempty"` // 图片/视频
-	Height        uint32                 `protobuf:"varint,6,opt,name=height,proto3" json:"height,omitempty"`
-	Duration      uint32                 `protobuf:"varint,7,opt,name=duration,proto3" json:"duration,omitempty"` // 音视频秒数
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 对象存储 key（形如 image/20261003/<16位hex>），**不是**可直接访问的地址。
+	// 取用流程：POST /v1/attachments/ticket（带登录态）换短时票据，
+	//          再 GET /v1/download?key=..&ticket=..
+	// 绝不要把登录 JWT 或长期有效的预签名地址放进这个字段：
+	// 消息会广播给会话全部成员、写入 message.attachment 并进入聊天归档。
+	Url           string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	Name          string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Size          uint64 `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
+	Mime          string `protobuf:"bytes,4,opt,name=mime,proto3" json:"mime,omitempty"`
+	Width         uint32 `protobuf:"varint,5,opt,name=width,proto3" json:"width,omitempty"` // 图片/视频
+	Height        uint32 `protobuf:"varint,6,opt,name=height,proto3" json:"height,omitempty"`
+	Duration      uint32 `protobuf:"varint,7,opt,name=duration,proto3" json:"duration,omitempty"` // 音视频秒数
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Attachment) Reset() {
 	*x = Attachment{}
-	mi := &file_im_proto_msgTypes[5]
+	mi := &file_im_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -639,7 +724,7 @@ func (x *Attachment) String() string {
 func (*Attachment) ProtoMessage() {}
 
 func (x *Attachment) ProtoReflect() protoreflect.Message {
-	mi := &file_im_proto_msgTypes[5]
+	mi := &file_im_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -652,7 +737,7 @@ func (x *Attachment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Attachment.ProtoReflect.Descriptor instead.
 func (*Attachment) Descriptor() ([]byte, []int) {
-	return file_im_proto_rawDescGZIP(), []int{5}
+	return file_im_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Attachment) GetUrl() string {
@@ -718,7 +803,7 @@ type MsgSend struct {
 
 func (x *MsgSend) Reset() {
 	*x = MsgSend{}
-	mi := &file_im_proto_msgTypes[6]
+	mi := &file_im_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -730,7 +815,7 @@ func (x *MsgSend) String() string {
 func (*MsgSend) ProtoMessage() {}
 
 func (x *MsgSend) ProtoReflect() protoreflect.Message {
-	mi := &file_im_proto_msgTypes[6]
+	mi := &file_im_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -743,7 +828,7 @@ func (x *MsgSend) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MsgSend.ProtoReflect.Descriptor instead.
 func (*MsgSend) Descriptor() ([]byte, []int) {
-	return file_im_proto_rawDescGZIP(), []int{6}
+	return file_im_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *MsgSend) GetClientMsgId() string {
@@ -801,7 +886,7 @@ type MsgAck struct {
 
 func (x *MsgAck) Reset() {
 	*x = MsgAck{}
-	mi := &file_im_proto_msgTypes[7]
+	mi := &file_im_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -813,7 +898,7 @@ func (x *MsgAck) String() string {
 func (*MsgAck) ProtoMessage() {}
 
 func (x *MsgAck) ProtoReflect() protoreflect.Message {
-	mi := &file_im_proto_msgTypes[7]
+	mi := &file_im_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -826,7 +911,7 @@ func (x *MsgAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MsgAck.ProtoReflect.Descriptor instead.
 func (*MsgAck) Descriptor() ([]byte, []int) {
-	return file_im_proto_rawDescGZIP(), []int{7}
+	return file_im_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *MsgAck) GetClientMsgId() string {
@@ -874,7 +959,7 @@ type MsgNotify struct {
 
 func (x *MsgNotify) Reset() {
 	*x = MsgNotify{}
-	mi := &file_im_proto_msgTypes[8]
+	mi := &file_im_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -886,7 +971,7 @@ func (x *MsgNotify) String() string {
 func (*MsgNotify) ProtoMessage() {}
 
 func (x *MsgNotify) ProtoReflect() protoreflect.Message {
-	mi := &file_im_proto_msgTypes[8]
+	mi := &file_im_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -899,7 +984,7 @@ func (x *MsgNotify) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MsgNotify.ProtoReflect.Descriptor instead.
 func (*MsgNotify) Descriptor() ([]byte, []int) {
-	return file_im_proto_rawDescGZIP(), []int{8}
+	return file_im_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MsgNotify) GetConversationId() string {
@@ -976,7 +1061,7 @@ type MsgPullReq struct {
 
 func (x *MsgPullReq) Reset() {
 	*x = MsgPullReq{}
-	mi := &file_im_proto_msgTypes[9]
+	mi := &file_im_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -988,7 +1073,7 @@ func (x *MsgPullReq) String() string {
 func (*MsgPullReq) ProtoMessage() {}
 
 func (x *MsgPullReq) ProtoReflect() protoreflect.Message {
-	mi := &file_im_proto_msgTypes[9]
+	mi := &file_im_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1001,7 +1086,7 @@ func (x *MsgPullReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MsgPullReq.ProtoReflect.Descriptor instead.
 func (*MsgPullReq) Descriptor() ([]byte, []int) {
-	return file_im_proto_rawDescGZIP(), []int{9}
+	return file_im_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *MsgPullReq) GetConversationId() string {
@@ -1037,7 +1122,7 @@ type MsgPullResp struct {
 
 func (x *MsgPullResp) Reset() {
 	*x = MsgPullResp{}
-	mi := &file_im_proto_msgTypes[10]
+	mi := &file_im_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1049,7 +1134,7 @@ func (x *MsgPullResp) String() string {
 func (*MsgPullResp) ProtoMessage() {}
 
 func (x *MsgPullResp) ProtoReflect() protoreflect.Message {
-	mi := &file_im_proto_msgTypes[10]
+	mi := &file_im_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1062,7 +1147,7 @@ func (x *MsgPullResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MsgPullResp.ProtoReflect.Descriptor instead.
 func (*MsgPullResp) Descriptor() ([]byte, []int) {
-	return file_im_proto_rawDescGZIP(), []int{10}
+	return file_im_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MsgPullResp) GetMsgs() []*MsgNotify {
@@ -1103,7 +1188,7 @@ type MsgRead struct {
 
 func (x *MsgRead) Reset() {
 	*x = MsgRead{}
-	mi := &file_im_proto_msgTypes[11]
+	mi := &file_im_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1115,7 +1200,7 @@ func (x *MsgRead) String() string {
 func (*MsgRead) ProtoMessage() {}
 
 func (x *MsgRead) ProtoReflect() protoreflect.Message {
-	mi := &file_im_proto_msgTypes[11]
+	mi := &file_im_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1128,7 +1213,7 @@ func (x *MsgRead) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MsgRead.ProtoReflect.Descriptor instead.
 func (*MsgRead) Descriptor() ([]byte, []int) {
-	return file_im_proto_rawDescGZIP(), []int{11}
+	return file_im_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *MsgRead) GetConversationId() string {
@@ -1158,7 +1243,7 @@ type CallSignal struct {
 
 func (x *CallSignal) Reset() {
 	*x = CallSignal{}
-	mi := &file_im_proto_msgTypes[12]
+	mi := &file_im_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1170,7 +1255,7 @@ func (x *CallSignal) String() string {
 func (*CallSignal) ProtoMessage() {}
 
 func (x *CallSignal) ProtoReflect() protoreflect.Message {
-	mi := &file_im_proto_msgTypes[12]
+	mi := &file_im_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1183,7 +1268,7 @@ func (x *CallSignal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallSignal.ProtoReflect.Descriptor instead.
 func (*CallSignal) Descriptor() ([]byte, []int) {
-	return file_im_proto_rawDescGZIP(), []int{12}
+	return file_im_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CallSignal) GetCallId() string {
@@ -1225,7 +1310,7 @@ var File_im_proto protoreflect.FileDescriptor
 
 const file_im_proto_rawDesc = "" +
 	"\n" +
-	"\bim.proto\x12\vim.protocol\"\xfa\x04\n" +
+	"\bim.proto\x12\vim.protocol\"\xa6\x05\n" +
 	"\x05Frame\x126\n" +
 	"\theartbeat\x18\x01 \x01(\v2\x16.im.protocol.HeartbeatH\x00R\theartbeat\x121\n" +
 	"\bauth_req\x18\x02 \x01(\v2\x14.im.protocol.AuthReqH\x00R\aauthReq\x124\n" +
@@ -1241,8 +1326,13 @@ const file_im_proto_rawDesc = "" +
 	"\vcall_signal\x18\n" +
 	" \x01(\v2\x17.im.protocol.CallSignalH\x00R\n" +
 	"callSignal\x12@\n" +
-	"\rcontact_event\x18\v \x01(\v2\x19.im.protocol.ContactEventH\x00R\fcontactEventB\x06\n" +
-	"\x04body\"\xa4\x01\n" +
+	"\rcontact_event\x18\v \x01(\v2\x19.im.protocol.ContactEventH\x00R\fcontactEvent\x12*\n" +
+	"\x05error\x18\f \x01(\v2\x12.im.protocol.ErrorH\x00R\x05errorB\x06\n" +
+	"\x04body\"`\n" +
+	"\x05Error\x12)\n" +
+	"\x11ref_client_msg_id\x18\x01 \x01(\tR\x0erefClientMsgId\x12\x12\n" +
+	"\x04code\x18\x02 \x01(\tR\x04code\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\xa4\x01\n" +
 	"\fContactEvent\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1d\n" +
 	"\n" +
@@ -1349,49 +1439,51 @@ func file_im_proto_rawDescGZIP() []byte {
 }
 
 var file_im_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_im_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_im_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_im_proto_goTypes = []any{
 	(MsgType)(0),         // 0: im.protocol.MsgType
 	(CallEventType)(0),   // 1: im.protocol.CallEventType
 	(*Frame)(nil),        // 2: im.protocol.Frame
-	(*ContactEvent)(nil), // 3: im.protocol.ContactEvent
-	(*Heartbeat)(nil),    // 4: im.protocol.Heartbeat
-	(*AuthReq)(nil),      // 5: im.protocol.AuthReq
-	(*AuthResp)(nil),     // 6: im.protocol.AuthResp
-	(*Attachment)(nil),   // 7: im.protocol.Attachment
-	(*MsgSend)(nil),      // 8: im.protocol.MsgSend
-	(*MsgAck)(nil),       // 9: im.protocol.MsgAck
-	(*MsgNotify)(nil),    // 10: im.protocol.MsgNotify
-	(*MsgPullReq)(nil),   // 11: im.protocol.MsgPullReq
-	(*MsgPullResp)(nil),  // 12: im.protocol.MsgPullResp
-	(*MsgRead)(nil),      // 13: im.protocol.MsgRead
-	(*CallSignal)(nil),   // 14: im.protocol.CallSignal
-	nil,                  // 15: im.protocol.AuthResp.MaxSeqsEntry
+	(*Error)(nil),        // 3: im.protocol.Error
+	(*ContactEvent)(nil), // 4: im.protocol.ContactEvent
+	(*Heartbeat)(nil),    // 5: im.protocol.Heartbeat
+	(*AuthReq)(nil),      // 6: im.protocol.AuthReq
+	(*AuthResp)(nil),     // 7: im.protocol.AuthResp
+	(*Attachment)(nil),   // 8: im.protocol.Attachment
+	(*MsgSend)(nil),      // 9: im.protocol.MsgSend
+	(*MsgAck)(nil),       // 10: im.protocol.MsgAck
+	(*MsgNotify)(nil),    // 11: im.protocol.MsgNotify
+	(*MsgPullReq)(nil),   // 12: im.protocol.MsgPullReq
+	(*MsgPullResp)(nil),  // 13: im.protocol.MsgPullResp
+	(*MsgRead)(nil),      // 14: im.protocol.MsgRead
+	(*CallSignal)(nil),   // 15: im.protocol.CallSignal
+	nil,                  // 16: im.protocol.AuthResp.MaxSeqsEntry
 }
 var file_im_proto_depIdxs = []int32{
-	4,  // 0: im.protocol.Frame.heartbeat:type_name -> im.protocol.Heartbeat
-	5,  // 1: im.protocol.Frame.auth_req:type_name -> im.protocol.AuthReq
-	6,  // 2: im.protocol.Frame.auth_resp:type_name -> im.protocol.AuthResp
-	8,  // 3: im.protocol.Frame.msg_send:type_name -> im.protocol.MsgSend
-	9,  // 4: im.protocol.Frame.msg_ack:type_name -> im.protocol.MsgAck
-	10, // 5: im.protocol.Frame.msg_notify:type_name -> im.protocol.MsgNotify
-	11, // 6: im.protocol.Frame.msg_pull_req:type_name -> im.protocol.MsgPullReq
-	12, // 7: im.protocol.Frame.msg_pull_resp:type_name -> im.protocol.MsgPullResp
-	13, // 8: im.protocol.Frame.msg_read:type_name -> im.protocol.MsgRead
-	14, // 9: im.protocol.Frame.call_signal:type_name -> im.protocol.CallSignal
-	3,  // 10: im.protocol.Frame.contact_event:type_name -> im.protocol.ContactEvent
-	15, // 11: im.protocol.AuthResp.max_seqs:type_name -> im.protocol.AuthResp.MaxSeqsEntry
-	0,  // 12: im.protocol.MsgSend.msg_type:type_name -> im.protocol.MsgType
-	7,  // 13: im.protocol.MsgSend.attachment:type_name -> im.protocol.Attachment
-	0,  // 14: im.protocol.MsgNotify.msg_type:type_name -> im.protocol.MsgType
-	7,  // 15: im.protocol.MsgNotify.attachment:type_name -> im.protocol.Attachment
-	10, // 16: im.protocol.MsgPullResp.msgs:type_name -> im.protocol.MsgNotify
-	1,  // 17: im.protocol.CallSignal.event:type_name -> im.protocol.CallEventType
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	5,  // 0: im.protocol.Frame.heartbeat:type_name -> im.protocol.Heartbeat
+	6,  // 1: im.protocol.Frame.auth_req:type_name -> im.protocol.AuthReq
+	7,  // 2: im.protocol.Frame.auth_resp:type_name -> im.protocol.AuthResp
+	9,  // 3: im.protocol.Frame.msg_send:type_name -> im.protocol.MsgSend
+	10, // 4: im.protocol.Frame.msg_ack:type_name -> im.protocol.MsgAck
+	11, // 5: im.protocol.Frame.msg_notify:type_name -> im.protocol.MsgNotify
+	12, // 6: im.protocol.Frame.msg_pull_req:type_name -> im.protocol.MsgPullReq
+	13, // 7: im.protocol.Frame.msg_pull_resp:type_name -> im.protocol.MsgPullResp
+	14, // 8: im.protocol.Frame.msg_read:type_name -> im.protocol.MsgRead
+	15, // 9: im.protocol.Frame.call_signal:type_name -> im.protocol.CallSignal
+	4,  // 10: im.protocol.Frame.contact_event:type_name -> im.protocol.ContactEvent
+	3,  // 11: im.protocol.Frame.error:type_name -> im.protocol.Error
+	16, // 12: im.protocol.AuthResp.max_seqs:type_name -> im.protocol.AuthResp.MaxSeqsEntry
+	0,  // 13: im.protocol.MsgSend.msg_type:type_name -> im.protocol.MsgType
+	8,  // 14: im.protocol.MsgSend.attachment:type_name -> im.protocol.Attachment
+	0,  // 15: im.protocol.MsgNotify.msg_type:type_name -> im.protocol.MsgType
+	8,  // 16: im.protocol.MsgNotify.attachment:type_name -> im.protocol.Attachment
+	11, // 17: im.protocol.MsgPullResp.msgs:type_name -> im.protocol.MsgNotify
+	1,  // 18: im.protocol.CallSignal.event:type_name -> im.protocol.CallEventType
+	19, // [19:19] is the sub-list for method output_type
+	19, // [19:19] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_im_proto_init() }
@@ -1411,6 +1503,7 @@ func file_im_proto_init() {
 		(*Frame_MsgRead)(nil),
 		(*Frame_CallSignal)(nil),
 		(*Frame_ContactEvent)(nil),
+		(*Frame_Error)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1418,7 +1511,7 @@ func file_im_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_im_proto_rawDesc), len(file_im_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   14,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
