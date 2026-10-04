@@ -130,6 +130,29 @@ cd client
 
 登录页填入服务端 API/WS 地址即可（默认 127.0.0.1:10002 / :10001）。
 
+### 从旧版本升级：root 连库 → 最小权限账号
+
+应用此前用 **root** 连库（能读 `mysql.user`、能碰任意库）。现在改用只对 `im` 库有权限的
+`im` 账号。MySQL 的初始化目录**只在数据目录为空时执行**，所以已有部署需要手工建一次号：
+
+```bash
+# 1) .env 里补两个新变量，并删掉旧的 IM_MYSQL_PASSWORD
+#    IM_MYSQL_ROOT_PASSWORD=<原来的 IM_MYSQL_PASSWORD>
+#    IM_APP_PASSWORD=<新生成一个，openssl rand -hex 16>
+
+# 2) 建号（在容器内执行，口令从容器环境变量取；外层用单引号避免宿主机提前展开）
+docker compose -f deploy/docker-compose.yml exec mysql sh -c '
+  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "
+    CREATE USER IF NOT EXISTS '"'"'im'"'"'@'"'"'%'"'"' IDENTIFIED BY '"'"'<第 1 步生成的 IM_APP_PASSWORD>'"'"';
+    GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, REFERENCES ON im.* TO '"'"'im'"'"'@'"'"'%'"'"';
+    FLUSH PRIVILEGES;"'
+
+# 3) 重启
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+> 全新部署不需要这步：mysql 容器首次初始化时会自动执行 `deploy/init/01-create-app-user.sh`。
+
 ## 服务端配置
 
 三个进程都读同一组环境变量（`deploy/docker-compose.yml` 里已给默认值）：
@@ -156,7 +179,8 @@ OIDC 的 `redirect_uri` 默认必须等于 `{base}/v1/oidc/{name}/callback`；�
 ## 测试
 
 CI（`.github/workflows/ci.yml`）在每次 push/PR 上跑：Go 构建 + vet + 单测、protoc 生成物与
-`im.proto` 的一致性、客户端编译与单元测试、服务端镜像构建。本地对应命令如下。
+`im.proto` 的一致性、客户端编译与单元测试、服务端镜像构建，以及**完整 E2E**
+（起 MySQL/Redis/MinIO + 三进程，跑客户端 5 个 E2E 用例）。本地对应命令如下。
 
 ```bash
 cd server && go test ./...                 # 服务端单测（含协议 golden 校验）

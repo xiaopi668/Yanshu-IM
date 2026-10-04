@@ -88,3 +88,93 @@ jobs:
             --build-arg VERSION=$(git rev-parse --short HEAD) \
             -t im-server:ci \
             -f server/deploy/Dockerfile server
+
+  # 端到端：真起 MySQL/Redis/MinIO + 三进程，跑客户端的 5 个 E2E 用例。
+  # 这一层是本地验证过、但此前完全没有自动化的部分（协议、投递、封禁、撤销都靠它兜底）。
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root123
+          MYSQL_DATABASE: im
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -uroot -proot123"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+      redis:
+        image: redis:7.4
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      IM_MYSQL_DSN: root:root123@tcp(127.0.0.1:3306)/im?parseTime=true
+      IM_REDIS_ADDR: 127.0.0.1:6379
+      IM_JWT_SECRET: ci-secret-ci-secret-ci-secret-ci-secret
+      IM_ADMIN_TOKEN: smoke-admin-token
+      IM_LIVEKIT_API_KEY: devkey
+      IM_LIVEKIT_API_SECRET: devsecret-devsecret-devsecret-devsecre
+      IM_STORAGE_ENDPOINT: 127.0.0.1:9000
+      IM_STORAGE_ACCESS_KEY: testadmin
+      IM_STORAGE_SECRET_KEY: testadmin123
+      IM_STORAGE_BUCKET: im-attachments
+      IM_STORAGE_PATH_STYLE: "true"
+      IM_AUTH_RATE_LIMIT: "60"
+      IM_TRUST_PROXY: "true"
+      IM_TEST_API: http://127.0.0.1:10002
+      IM_TEST_WS: ws://127.0.0.1:10001/ws
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: 启动 MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=testadmin -e MINIO_ROOT_PASSWORD=testadmin123 \
+            minio/minio server /data
+      - name: 起服务端并跑 E2E
+        run: |
+          set -e
+          cd server
+          go build -o /tmp/im-logic ./cmd/logic
+          go build -o /tmp/im-gateway ./cmd/gateway
+          go build -o /tmp/im-admin ./cmd/admin
+          IM_LOGIC_ADDR=:10002 IM_NODE_ID=91 nohup /tmp/im-logic   >/tmp/logic.log   2>&1 &
+          IM_GATEWAY_ADDR=:10001 IM_NODE_ID=92 nohup /tmp/im-gateway >/tmp/gateway.log 2>&1 &
+          IM_ADMIN_ADDR=:10003 nohup /tmp/im-admin                  >/tmp/admin.log   2>&1 &
+          # 用探针等就绪，而不是 sleep 猜时间
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:10002/healthz >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:10002/healthz
+          curl -sf http://127.0.0.1:10001/healthz
+          curl -sf http://127.0.0.1:10003/healthz
+          # E2E 依赖这两个已注册账号（密码 secret1）
+          curl -s -X POST http://127.0.0.1:10002/v1/register -d '{"username":"alice","password":"secret1"}' >/dev/null
+          curl -s -X POST http://127.0.0.1:10002/v1/register -d '{"username":"bob","password":"secret1"}'   >/dev/null
+          cd ../client
+          ./gradlew --no-daemon :shared:desktopTest \
+            --tests 'im.client.ImClientE2eTest' \
+            --tests 'im.client.Phase2E2eTest' \
+            --tests 'im.client.Phase3E2eTest'
+      - name: 失败时输出服务端日志
+        if: failure()
+        run: |
+          tail -50 /tmp/logic.log /tmp/gateway.log /tmp/admin.log || true
+

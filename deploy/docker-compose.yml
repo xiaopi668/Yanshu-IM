@@ -32,12 +32,18 @@ x-limits: &default-limits
 services:
   mysql:
     restart: unless-stopped
-    image: mysql:8
+    # 固定到次版本号：latest/大版本会在重拉时悄悄升级，部署不可复现。
+    # 要完全可复现可改用 digest：docker inspect --format '{{index .RepoDigests 0}}' mysql:8.4
+    image: mysql:8.4
     environment:
-      MYSQL_ROOT_PASSWORD: ${IM_MYSQL_PASSWORD:?必须设置 IM_MYSQL_PASSWORD（数据库口令）}
+      MYSQL_ROOT_PASSWORD: ${IM_MYSQL_ROOT_PASSWORD:?必须设置 IM_MYSQL_ROOT_PASSWORD（数据库 root 口令）}
+      # 仅用于初始化脚本创建最小权限应用账号
+      IM_APP_PASSWORD: ${IM_APP_PASSWORD:?必须设置 IM_APP_PASSWORD（应用库账号口令）}
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     volumes:
       - mysql-data:/var/lib/mysql
+      # 仅首次初始化（数据目录为空）时执行：创建 im 账号，只授予 im 库权限
+      - ./init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
@@ -51,7 +57,8 @@ services:
 
   redis:
     restart: unless-stopped
-    image: redis:7
+    # 同上：固定次版本号，避免重拉时被动升级
+    image: redis:7.4
     volumes:
       - redis-data:/data
     healthcheck:
@@ -122,7 +129,9 @@ services:
       # 角色已知时只校验本角色用到的密钥（见 config.CheckSecrets）
       IM_ENV: production
       IM_MYSQL_HOST: mysql
-      IM_MYSQL_PASSWORD: ${IM_MYSQL_PASSWORD:?}
+      # 应用连库用最小权限账号（只有 im 库权限），不是 root
+      IM_MYSQL_USER: im
+      IM_MYSQL_PASSWORD: ${IM_APP_PASSWORD:?}
       IM_REDIS_ADDR: redis:6379
       IM_JWT_SECRET: ${IM_JWT_SECRET:?必须设置 IM_JWT_SECRET（登录令牌签名密钥）}
       IM_STORAGE_ENDPOINT: minio:9000
@@ -158,7 +167,9 @@ services:
       IM_ROLE: admin
       IM_ENV: production
       IM_MYSQL_HOST: mysql
-      IM_MYSQL_PASSWORD: ${IM_MYSQL_PASSWORD:?}
+      # 应用连库用最小权限账号（只有 im 库权限），不是 root
+      IM_MYSQL_USER: im
+      IM_MYSQL_PASSWORD: ${IM_APP_PASSWORD:?}
       IM_REDIS_ADDR: redis:6379
       IM_ADMIN_TOKEN: ${IM_ADMIN_TOKEN:?必须设置 IM_ADMIN_TOKEN（管理后台令牌）}
       IM_STORAGE_ENDPOINT: minio:9000
@@ -189,7 +200,9 @@ services:
       IM_ROLE: gateway
       IM_ENV: production
       IM_MYSQL_HOST: mysql
-      IM_MYSQL_PASSWORD: ${IM_MYSQL_PASSWORD:?}
+      # 应用连库用最小权限账号（只有 im 库权限），不是 root
+      IM_MYSQL_USER: im
+      IM_MYSQL_PASSWORD: ${IM_APP_PASSWORD:?}
       IM_REDIS_ADDR: redis:6379
       IM_JWT_SECRET: ${IM_JWT_SECRET:?}
       # 真正签发 LiveKit token 的是 gateway，因此密钥必须给它（旧版本错发给了 logic）
