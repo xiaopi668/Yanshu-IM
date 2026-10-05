@@ -96,8 +96,12 @@ async function api(path, opts = {}) {
     ...opts,
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOK, ...(opts.headers||{}) },
   });
-  if (r.status === 401) { document.querySelector('.msg').textContent = 'Token 无效'; throw new Error('unauth'); }
-  return r.json();
+  if (r.status === 401) { document.querySelector('.msg').textContent = 'Token 无效'; throw new Error('Token 无效或已失效'); }
+  const data = await r.json().catch(() => ({}));
+  // 非 2xx 必须抛错。之前直接 return r.json()，调用方拿到的是 {error:"..."} 这个"成功值"，
+  // 于是失败会被当成成功显示（例如 SMTP 自检失败会提示"已发送到 undefined"）。
+  if (!r.ok) throw new Error(data.error || data.message || ('请求失败 HTTP ' + r.status));
+  return data;
 }
 
 async function boot() {
@@ -190,7 +194,7 @@ async function saveAuth() {
     await api('/admin/site-config', { method: 'PUT', body: JSON.stringify(c) });
     document.getElementById('authMsg').textContent = '';
     alert('已保存');
-  } catch (e) { document.getElementById('authMsg').textContent = String(e); }
+  } catch (e) { document.getElementById('authMsg').textContent = ((e && e.message) ? e.message : String(e)); }
 }
 async function sendTestMail() {
   const to = document.getElementById('cfgTestTo').value.trim();
@@ -204,7 +208,7 @@ async function sendTestMail() {
   } catch (e) {
     // 服务端把配置问题（地址/口令/发件人被拒）作为 400 返回，这里原样显示给管理员
     msg.style.color = '#c0392b';
-    msg.textContent = String(e);
+    msg.textContent = ((e && e.message) ? e.message : String(e));
   }
 }
 async function archive() {

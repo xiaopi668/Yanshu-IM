@@ -80,9 +80,11 @@ fun AppRoot() {
                         c.startSession()
                         client = c
                     } catch (e: Throwable) {
-                        val m = e.message ?: ""
-                        // 只有明确的鉴权失败才丢弃会话；网络抖动时保留，下次启动还能恢复
-                        if (m.contains("401") || m.contains("403") || m.contains("404")) clearSession()
+                        // 只有明确的鉴权失败才丢弃会话；网络抖动时保留，下次启动还能恢复。
+                        // 用结构化的 status 判断，不再在文案里找数字 —— 文案已经改成
+                        // 「登录已过期，请重新登录」这类人话，找 "401" 会失效。
+                        val st = (e as? im.client.api.ApiException)?.status ?: 0
+                        if (st == 401 || st == 403 || st == 404) clearSession()
                     }
                 }
                 restoring = false

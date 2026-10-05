@@ -111,7 +111,9 @@ class Api(private val baseUrl: String) {
             body = body,
             token = token,
         )
-        if (resp.first >= 400) throw ApiException("HTTP ${resp.first}: ${resp.second}")
+        if (resp.first >= 400) {
+            throw ApiException(httpErrorMessage(resp.first, resp.second), resp.first, resp.second)
+        }
         return resp.second
     }
 
@@ -241,7 +243,51 @@ class Api(private val baseUrl: String) {
         request("GET", "/v1/me", null, token)
 }
 
-class ApiException(message: String) : Exception(message)
+/**
+ * 接口调用失败。
+ *
+ * 之前客户端直接把服务端返回体拼进消息里（'HTTP 400: {"error":"..."}'），
+ * 用户界面上就会看到一坨原始 JSON —— 那是给程序看的，不是给人看的。
+ * 现在统一走 [httpErrorMessage] 提取可读文案，同时把状态码单独带出来，
+ * 需要按状态判断的地方（例如令牌失效要回登录页）用 [status] 而不是在字符串里找数字。
+ */
+class ApiException(
+    message: String,
+    val status: Int = 0,
+    val body: String = "",
+) : Exception(message)
+
+/** 服务端错误响应体的标准形态是 {"error":"..."}；个别接口用 {"message":"..."} */
+@kotlinx.serialization.Serializable
+private data class ApiErrorBody(val error: String = "", val message: String = "")
+
+/**
+ * 把「状态码 + 响应体」变成用户能读的一句话。
+ * 优先取 JSON 里的 error / message；拿不到再退回纯文本（截断），最后按状态码给兜底文案。
+ */
+fun httpErrorMessage(code: Int, body: String): String {
+    val text = body.trim()
+    if (text.isNotEmpty()) {
+        val fromJson = runCatching {
+            val o = kotlinx.serialization.json.Json.parseToJsonElement(text)
+            val e = kotlinx.serialization.json.Json.decodeFromJsonElement(ApiErrorBody.serializer(), o)
+            e.error.ifBlank { e.message }
+        }.getOrNull()
+        if (!fromJson.isNullOrBlank()) return fromJson
+        // 不是 JSON（或没有 error 字段）时，短文本可以直接用；HTML/超长内容不要往界面上丢
+        if (!text.startsWith("{") && !text.startsWith("<") && text.length <= 200) return text
+    }
+    return when (code) {
+        400 -> "请求参数有误"
+        401 -> "登录已过期，请重新登录"
+        403 -> "没有权限执行该操作"
+        404 -> "请求的内容不存在"
+        409 -> "操作冲突，请刷新后重试"
+        429 -> "操作太频繁，请稍后再试"
+        in 500..599 -> "服务端异常（HTTP $code），请稍后重试"
+        else -> "请求失败（HTTP $code）"
+    }
+}
 
 @Serializable
 data class SearchUserResp(val uid: String, val yid: String, val nickname: String)
@@ -317,6 +363,6 @@ internal fun urlEncode(s: String): String {
 /** 无 token 的裸 HTTP 文本请求（登录前场景：site-config / 邮箱验证码 / OIDC） */
 suspend fun rawHttpText(method: String, url: String, body: String? = null): String {
     val (code, text) = Http.execute(method, url, body, null)
-    if (code >= 400) throw ApiException("HTTP $code: $text")
+    if (code >= 400) throw ApiException(httpErrorMessage(code, text), code, text)
     return text
 }
