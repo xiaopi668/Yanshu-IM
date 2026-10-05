@@ -37,9 +37,23 @@ class Api(private val baseUrl: String) {
         return request("POST", "/v1/register", body)
     }
 
-    suspend fun login(username: String, password: String, platform: String): LoginResp {
+    // turnstileToken 必须能传进来：服务端 /v1/login 在站点开启人机验证时会校验它
+    // （main.go 的 checkTurnstile 对登录和注册都做了检查）。
+    // 之前这里没有这个参数，客户端永远发不出令牌 —— 只要站点开了人机验证，
+    // 登录必然被服务端拒绝，而且界面上看不出任何原因。
+    suspend fun login(
+        username: String,
+        password: String,
+        platform: String,
+        turnstileToken: String = "",
+    ): LoginResp {
         val body = json.encodeToString(
-            mapOf("username" to username, "password" to password, "platform" to platform)
+            mapOf(
+                "username" to username,
+                "password" to password,
+                "platform" to platform,
+                "turnstile_token" to turnstileToken,
+            )
         )
         return request("POST", "/v1/login", body)
     }

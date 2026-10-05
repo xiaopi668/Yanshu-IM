@@ -106,8 +106,10 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
     // 站点关闭注册时不给注册入口
     val canRegister = siteCfg?.registration_enabled != false
     val turnstileOn = siteCfg?.turnstile_enabled == true && siteCfg?.turnstile_site_key?.isNotEmpty() == true
-    // 人机验证开着、但当前端根本渲染不出来 → 注册必然被服务端 403，提前拦掉并说明原因
-    val turnstileBlocked = turnstileOn && turnstileToken.isEmpty() && !turnstileRenderable
+    // 站点开了人机验证却没拿到令牌：登录/注册都会被服务端 403，提前拦掉并说明原因
+    val turnstilePending = turnstileOn && turnstileToken.isEmpty()
+    // 当前端根本渲染不出小组件（桌面/Android）时，光等着也没用，要给出替代方案
+    val turnstileBlocked = turnstilePending && !turnstileRenderable
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(
@@ -214,13 +216,15 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                         Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
 
-                    // Turnstile：小组件由各平台 actual 负责渲染（只有 Web 端真的画得出来）
-                    if (isRegister && turnstileOn) {
+                    // Turnstile：小组件由各平台 actual 负责渲染（只有 Web 端真的画得出来）。
+                    // **登录和注册都要显示** —— 服务端在 /v1/login 与 /v1/register 两处都会校验
+                    // （main.go 的 checkTurnstile），只在注册界面放会让登录既提交不了也没处验证。
+                    if (turnstileOn) {
                         TurnstileSlot(turnstileToken, turnstileRenderable, turnstileErr)
                     }
-                    // 离开注册界面就把小组件藏起来：它是个 DOM 浮层，不藏会留在页面上
-                    LaunchedEffect(isRegister, turnstileOn) {
-                        if (!isRegister || !turnstileOn) hideTurnstileWidget("turnstile-box")
+                    // 站点关掉人机验证时才隐藏小组件：它是个 DOM 节点，不藏会留在页面上
+                    LaunchedEffect(turnstileOn) {
+                        if (!turnstileOn) hideTurnstileWidget("turnstile-box")
                     }
 
                     error?.let {
@@ -234,14 +238,16 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
 
                     Spacer(Modifier.height(24.dp))
                     if (!isRegister) Button(
-                        enabled = !busy,
+                        // 站点开了人机验证时，没拿到令牌就禁用：服务端 /v1/login 会校验它，
+                        // 让用户点下去只会得到一句「请完成人机验证」而无从下手。
+                        enabled = !busy && !turnstilePending,
                         onClick = {
                             busy = true; error = null; tip = null
                             scope.launch {
                                 try {
                                     val client = ImClient(apiBase.trimEnd('/'), wsBase)
                                     client.wireCallbacks()
-                                    client.login(username, password)
+                                    client.login(username, password, turnstileToken)
                                     client.startSession()
                                     saveSession(SavedSession(client.myToken, client.apiBaseUrl, client.gatewayWsUrl))
                                     onLoggedIn(client)
@@ -257,15 +263,21 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
 
                     if (isRegister && canRegister) {
                         OutlinedButton(
-                            enabled = !busy && !turnstileBlocked && username.isNotBlank() && password.isNotBlank(),
+                            enabled = !busy && !turnstilePending && username.isNotBlank() && password.isNotBlank(),
                             onClick = {
                                 busy = true; error = null; tip = null
                                 scope.launch {
                                     try {
                                         val client = ImClient(apiBase.trimEnd('/'), wsBase)
                                         client.wireCallbacks()
-                                        client.register(username, password, username, "", email, emailCode, turnstileToken)
-                                        client.login(username, password)
+                                        // 注册接口本身就返回令牌，直接用它登录。
+                                        // 不能再调一次 login：Turnstile 令牌是一次性的，
+                                        // 注册已经把它用掉了，第二次校验必然失败
+                                        //（Cloudflare 会返回 timeout-or-duplicate）。
+                                        val (_, regToken) = client.register(
+                                            username, password, username, "", email, emailCode, turnstileToken,
+                                        )
+                                        client.loginWithToken(regToken)
                                         client.startSession()
                                         saveSession(SavedSession(client.myToken, client.apiBaseUrl, client.gatewayWsUrl))
                                         onLoggedIn(client)
