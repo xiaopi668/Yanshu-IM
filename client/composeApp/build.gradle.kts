@@ -96,6 +96,8 @@ kotlin {
             implementation(compose.ui)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
+            // 生成 Res 类以访问 composeResources 下的图片（品牌 logo）
+            implementation(compose.components.resources)
         }
         commonMain {
             // 构建期生成的 ImBuildConfig（默认地址 / 是否隐藏地址输入）
@@ -129,6 +131,12 @@ if (hasAndroidSdk) {
         }
         packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
+}
+
+// 资源类固定包名，避免依赖默认推导（默认包名随 group/模块变化，容易一改就编译不过）
+compose.resources {
+    publicResClass = true
+    packageOfResClass = "im.app.resources"
 }
 
 compose.desktop {

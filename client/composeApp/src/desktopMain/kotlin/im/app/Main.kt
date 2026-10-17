@@ -1,6 +1,9 @@
 package im.app
 
 import androidx.compose.ui.unit.dp
+import im.app.resources.Res
+import im.app.resources.logo
+import org.jetbrains.compose.resources.painterResource
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
@@ -19,6 +22,8 @@ fun main() {
         Window(
             onCloseRequest = ::exitApplication,
             title = "雁书",
+            // 窗口/任务栏图标与品牌 logo 保持一致
+            icon = painterResource(Res.drawable.logo),
             state = rememberWindowState(width = width, height = height),
         ) {
             AppRoot()

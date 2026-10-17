@@ -14,6 +14,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import org.jetbrains.compose.resources.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -24,6 +25,8 @@ import im.client.auth.SavedSession
 import im.client.auth.oidcLogin
 import im.client.auth.saveSession
 import im.client.openUrl
+import im.app.resources.Res
+import im.app.resources.logo
 import im.client.registerTurnstileCallback
 import im.client.hideTurnstileWidget
 import im.client.positionTurnstileWidget
@@ -410,14 +413,12 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
 @Composable
 private fun BrandHeader() {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            Modifier.size(52.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(MaterialTheme.colorScheme.primary),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text("雁", color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.headlineSmall)
-        }
+        // 品牌图标用真实图片资源（此前是代码画的圆角色块 + 「雁」字）
+        androidx.compose.foundation.Image(
+            painter = painterResource(Res.drawable.logo),
+            contentDescription = "雁书",
+            modifier = Modifier.size(56.dp),
+        )
         Spacer(Modifier.width(14.dp))
         Column {
             Text("雁书", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)

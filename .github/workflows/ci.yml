@@ -86,6 +86,17 @@ jobs:
             --tests 'im.client.net.*' \
             --tests 'im.client.api.*' \
             --tests 'im.client.auth.*'
+      # Web 发行版。此前 CI 从不构建 Web 产物 —— 客户端是四端交付，
+      # 而 Web 那端的打包（含静态资源如 favicon）一直没人守。
+      - name: 构建 Web 发行版并校验随产物发布的图标
+        working-directory: client
+        run: |
+          unset ANDROID_HOME ANDROID_SDK_ROOT
+          ./gradlew --no-daemon :composeApp:wasmJsBrowserDistribution
+          DIST=composeApp/build/dist/wasmJs/productionExecutable
+          test -f "$DIST/favicon.ico" || { echo "缺少 favicon.ico"; exit 1; }
+          test -f "$DIST/favicon.png" || { echo "缺少 favicon.png"; exit 1; }
+          ls -la "$DIST" | head -20
 
   # Android 目标的构建保障。此前这里是完全空白：Android 源码从未被编译过，
   # 因此积累了三处致命问题（AGP 应用顺序、缺 android.useAndroidX、compileSdk 与
