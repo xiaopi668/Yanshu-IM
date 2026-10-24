@@ -72,6 +72,45 @@ tasks.matching { it.name.startsWith("compile") && it.name.contains("Kotlin") }.c
     dependsOn(genImConfig)
 }
 
+// ---------- 版本号 ----------
+// 优先级：-PverName/-PverCode > 环境变量 IM_APP_VERSION/IM_APP_VERSION_CODE
+//        > 最近的 git tag（vX.Y.Z）> 默认 0.1.0 / 1
+//
+// 为什么不能写死：Android 升级要求 versionCode 单调递增，固定为 1 会导致
+// 新版本 APK 覆盖安装被系统拒绝。用最近 tag 推导，发版自然递增。
+fun gitNearestTag(): String? = try {
+    val proc = ProcessBuilder("git", "describe", "--tags", "--abbrev=0", "--match", "v*")
+        .directory(rootDir)
+        .redirectErrorStream(true)
+        .start()
+    val out = proc.inputStream.bufferedReader().readText().trim()
+    proc.waitFor()
+    out.takeIf { it.matches(Regex("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) }?.removePrefix("v")
+} catch (_: Throwable) {
+    null
+}
+
+fun semverToCode(v: String): Int = runCatching {
+    val parts = v.split(".").map { it.toInt() }
+    parts[0] * 10000 + parts[1] * 100 + parts[2]
+}.getOrDefault(1)
+
+val explicitVerName = (findProperty("verName") as String?)?.takeIf { it.isNotBlank() }
+    ?: System.getenv("IM_APP_VERSION")?.takeIf { it.isNotBlank() }
+val tagVerName = gitNearestTag()
+val appVersionName = explicitVerName ?: tagVerName ?: "0.1.0"
+val appVersionCode = (findProperty("verCode") as String?)?.toIntOrNull()
+    ?: System.getenv("IM_APP_VERSION_CODE")?.toIntOrNull()
+    ?: if (explicitVerName != null || tagVerName != null) semverToCode(appVersionName) else 1
+
+/** 用 ./gradlew :composeApp:printVersion 查看解析结果（发版前自查用） */
+tasks.register("printVersion") {
+    doLast {
+        println("versionName=" + appVersionName + " versionCode=" + appVersionCode)
+        println("来源: " + (if (explicitVerName != null) "显式参数/环境变量" else if (tagVerName != null) "git tag v" + tagVerName else "默认值"))
+    }
+}
+
 kotlin {
     if (hasAndroidSdk) androidTarget {
         compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
@@ -129,8 +168,8 @@ if (hasAndroidSdk) {
             applicationId = "im.app"
             minSdk = 26
             targetSdk = 37
-            versionCode = 1
-            versionName = "0.1.0"
+            versionCode = appVersionCode
+            versionName = appVersionName
         }
         packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }

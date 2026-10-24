@@ -183,6 +183,24 @@ cd client
 (`composeApp/build/generated/imconfig/im/app/ImBuildConfig.kt`)，业务代码只读 `ImBuildConfig`。
 参数是任务的输入，改了必然重新生成 —— 不会出现「改了没生效」的缓存问题。
 
+### 版本号
+
+`versionCode` / `versionName` 不写死，按优先级解析：
+
+1. 构建参数 `-PverName` / `-PverCode`
+2. 环境变量 `IM_APP_VERSION` / `IM_APP_VERSION_CODE`
+3. 最近的 git tag（`vX.Y.Z`）：名字取 tag，`versionCode = major*10000 + minor*100 + patch`
+4. 都没有时回落到 `0.1.0` / `1`
+
+```bash
+./gradlew :composeApp:printVersion                      # 查看解析结果与来源
+./gradlew :composeApp:assembleDebug -PverName=1.2.0    # 显式指定（versionCode 自动推导）
+./gradlew :composeApp:assembleDebug -PverName=1.2.0 -PverCode=10200
+```
+
+**为什么必须递增**：Android 要求 `versionCode` 单调递增，写死会导致新版本 APK
+覆盖安装被系统拒绝。用最近 tag 推导后：`v0.1.0 → 100`、`v0.1.1 → 101`，发版自然递增。
+
 登录页填入服务端 API/WS 地址即可（默认 127.0.0.1:10002 / :10001）。
 
 ### 从旧版本升级：root 连库 → 最小权限账号
