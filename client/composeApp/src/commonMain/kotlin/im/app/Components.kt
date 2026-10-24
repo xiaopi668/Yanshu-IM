@@ -85,38 +85,30 @@ fun StatusPill(state: ConnState, modifier: Modifier = Modifier) {
 }
 
 /**
- * 分段切换（聊天 / 通讯录 / 朋友圈）。
- * 比三个 FilterChip 更贴近「现代简约」：一条底 + 选中块，没有多余描边。
+ * 顶层切换（聊天 / 通讯录 / 朋友圈）。
+ *
+ * 用 M3 的 PrimaryTabRow + Tab：选中态由「滑块指示器」表达，这是 Material 3 的标志性控件。
+ * 之前是自己画的一条底 + 一个白色方块 —— 看着像，但拿不到 M3 的指示器动画、
+ * 无障碍语义、以及 RTL/尺寸适配。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SegmentedRow(options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
-            .padding(4.dp),
+    val index = options.indexOfFirst { it.first == selected }.coerceAtLeast(0)
+    PrimaryTabRow(
+        selectedTabIndex = index,
+        containerColor = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.fillMaxWidth(),
     ) {
         options.forEach { (id, label) ->
-            val active = selected == id
-            Box(
-                Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(if (active) MaterialTheme.colorScheme.surface else Color.Transparent)
-                    .clickable { onSelect(id) }
-                    .padding(vertical = 7.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    label,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (active) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Tab(
+                selected = selected == id,
+                onClick = { onSelect(id) },
+                text = {
+                    Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                },
+            )
         }
     }
 }

@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.zIndex
@@ -46,7 +47,9 @@ internal var DEFAULT_WS = ImBuildConfig.WS_BASE
 
 @Composable
 fun AppRoot() {
-    YanshuTheme {
+    // 用户选的主题色（null = 跟随平台默认：Android 12+ 跟随壁纸，其它平台用品牌色）
+    var accentSeed by remember { mutableStateOf(loadAccentSeed()) }
+    YanshuTheme(seedHex = accentSeed) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             var client by remember { mutableStateOf<ImClient?>(null) }
             // 恢复会话期间先出启动画面，避免闪一下登录页
@@ -112,6 +115,11 @@ fun AppRoot() {
                             c.stop()
                             client = null
                         },
+                        accentSeed = accentSeed,
+                        onAccentChange = { hex ->
+                            accentSeed = hex
+                            saveAccentSeed(hex)
+                        },
                     )
                 }
             }
@@ -168,7 +176,12 @@ suspend fun apiSendEmailCode(apiBase: String, email: String, turnstileToken: Str
 // ---------- 主界面 ----------
 
 @Composable
-fun MainScreen(client: ImClient, onLogout: () -> Unit) {
+fun MainScreen(
+    client: ImClient,
+    onLogout: () -> Unit,
+    accentSeed: String? = null,
+    onAccentChange: (String?) -> Unit = {},
+) {
     var selected by remember { mutableStateOf<Conversation?>(null) }
     val state by client.connectionState.collectAsState()
     val callState by client.callController.uiState.collectAsState()
@@ -307,7 +320,12 @@ fun MainScreen(client: ImClient, onLogout: () -> Unit) {
     }
 
     if (showProfile) {
-        ProfileDialog(client) { showProfile = false }
+        ProfileDialog(
+            client = client,
+            onDismiss = { showProfile = false },
+            accentSeed = accentSeed,
+            onAccentChange = onAccentChange,
+        )
     }
 
     if (showNewGroupDialog) {
@@ -412,6 +430,7 @@ private fun scopeLaunch(block: suspend () -> Unit) {
     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob()).launch { block() }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationList(client: ImClient, selected: Conversation?, onSelect: (Conversation) -> Unit) {
     val list by client.conversations.collectAsState()
@@ -424,56 +443,72 @@ fun ConversationList(client: ImClient, selected: Conversation?, onSelect: (Conve
             val title = conv.title.ifEmpty { conv.id.takeLast(8) }
             val unread = (conv.lastSeq - conv.readSeq).coerceAtLeast(0)
             Surface(
-                color = if (isSel) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
-                else Color.Transparent,
+                color = if (isSel) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
                 onClick = { onSelect(conv) },
-                shape = RoundedCornerShape(12.dp),
+                shape = MaterialTheme.shapes.large,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
             ) {
-                Row(Modifier.padding(horizontal = 10.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(title, size = 42.dp, round = true)
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
+                // M3 ListItem：leading / headline / supporting / trailing 四段式行版式
+                ListItem(
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    leadingContent = { Avatar(title, size = 42.dp, round = true) },
+                    headlineContent = {
                         Text(
                             title,
-                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        Spacer(Modifier.height(3.dp))
+                    },
+                    supportingContent = {
                         Text(
                             if (conv.type == "group") "群聊" else "单聊",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    }
-                    if (unread > 0) {
-                        Box(
-                            Modifier
-                                .background(MaterialTheme.colorScheme.error, RoundedCornerShape(50))
-                                .padding(horizontal = 6.dp, vertical = 1.dp),
-                        ) {
-                            Text(
-                                unread.toString(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onError,
-                            )
+                    },
+                    trailingContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (unread > 0) {
+                                // M3 Badge 的形态：小圆角药丸 + error 配色
+                                Box(
+                                    Modifier
+                                        .background(MaterialTheme.colorScheme.error, CircleShape)
+                                        .padding(horizontal = 7.dp, vertical = 2.dp),
+                                ) {
+                                    Text(
+                                        unread.toString(),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onError,
+                                    )
+                                }
+                            }
+                            if (conv.type == "group") {
+                                var infoOpen by remember { mutableStateOf(false) }
+                                IconButton(onClick = { infoOpen = true }) {
+                                    Text("⋯", style = MaterialTheme.typography.titleMedium)
+                                }
+                                if (infoOpen) {
+                                    GroupInfoDialog(
+                                        client, conv.id, conv.title,
+                                        onLeft = {
+                                            onSelect(
+                                                Conversation(conv.id, conv.type, conv.title, conv.lastSeq, conv.readSeq)
+                                            )
+                                        },
+                                    ) { infoOpen = false }
+                                }
+                            }
                         }
-                        Spacer(Modifier.width(6.dp))
-                    }
-                    if (conv.type == "group") {
-                        var infoOpen by remember { mutableStateOf(false) }
-                        TextButton(onClick = { infoOpen = true }, contentPadding = PaddingValues(0.dp)) { Text("⋯") }
-                        if (infoOpen) {
-                            GroupInfoDialog(client, conv.id, conv.title, onLeft = { onSelect(Conversation(conv.id, conv.type, conv.title, conv.lastSeq, conv.readSeq)) }) { infoOpen = false }
-                        }
-                    }
-                }
+                    },
+                )
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier = Modifier) {
     val msgs by remember(conversation.id) {
@@ -490,28 +525,28 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
 
     val title = conversation.title.ifEmpty { conversation.id.takeLast(8) }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        // 头部
-        Surface(color = MaterialTheme.colorScheme.surface) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Avatar(title, size = 38.dp, round = true)
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        title,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        if (conversation.type == "group") "群聊" else "单聊",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+        // 头部：M3 TopAppBar（容器用 surfaceContainer，和 M3 的层级一致）
+        TopAppBar(
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(title, size = 36.dp, round = true)
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            if (conversation.type == "group") "群聊" else "单聊",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
+            },
+            actions = {
                 if (conversation.type == "single") {
                     IconButton(
                         onClick = {
@@ -522,9 +557,11 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
                         },
                     ) { Text("📞", style = MaterialTheme.typography.titleMedium) }
                 }
-            }
-        }
-        HorizontalDivider()
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            ),
+        )
         // 消息列表
         LazyColumn(Modifier.weight(1f), state = listState, contentPadding = PaddingValues(12.dp)) {
             items(msgs, key = { it.serverMsgId.ifEmpty { it.clientMsgId ?: "" } }) { m ->
@@ -552,24 +589,30 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
                     },
                 ) { Text("📎", style = MaterialTheme.typography.titleMedium) }
                 Spacer(Modifier.width(4.dp))
-                OutlinedTextField(
+                // M3 filled TextField + pill 形状（Material You 的聊天输入框就是这样）
+                TextField(
                     input, { input = it },
                     placeholder = { Text("输入消息…") },
                     modifier = Modifier.weight(1f),
                     maxLines = 4,
-                    shape = RoundedCornerShape(14.dp),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = TextFieldDefaults.colors(
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    ),
                 )
-                Spacer(Modifier.width(10.dp))
-                Button(
-                    enabled = input.isNotBlank(),
+                Spacer(Modifier.width(8.dp))
+                // M3 的 FilledIconButton：圆形填充按钮
+                FilledIconButton(
                     onClick = {
                         val text = input
                         input = ""
                         scope.launch { client.sendMessage(conversation.id, text) }
                     },
-                    shape = RoundedCornerShape(12.dp),
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
-                ) { Text("发送") }
+                    enabled = input.isNotBlank(),
+                    modifier = Modifier.size(44.dp),
+                ) { Text("➤", style = MaterialTheme.typography.titleMedium) }
             }
         }
         sendError?.let {

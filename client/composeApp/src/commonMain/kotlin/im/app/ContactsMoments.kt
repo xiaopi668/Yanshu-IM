@@ -1,6 +1,8 @@
 package im.app
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -505,7 +507,12 @@ internal fun momentTimeOf(ms: Long): String = im.client.formatChatTime(ms)
 private val yidRegex = Regex("^[a-zA-Z][a-zA-Z0-9_-]{4,19}$")
 
 @Composable
-fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
+fun ProfileDialog(
+    client: ImClient,
+    onDismiss: () -> Unit,
+    accentSeed: String? = null,
+    onAccentChange: (String?) -> Unit = {},
+) {
     var nickname by remember { mutableStateOf(client.myNickname) }
     var yid by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("") }
@@ -603,6 +610,44 @@ fun ProfileDialog(client: ImClient, onDismiss: () -> Unit) {
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                }
+                // 主题色（Material You 的种子色）：Android 12+ 默认跟随壁纸；
+                // Web/桌面没有壁纸，就由用户自己选一个
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    if (accentSeed == null) "主题色：跟随系统（Android 12+ 跟随壁纸）" else "主题色：自定义",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ACCENT_PRESETS.forEach { (hex, _) ->
+                        val selected = accentSeed?.removePrefix("#")?.equals(hex, ignoreCase = true) == true
+                        Box(
+                            Modifier
+                                .size(26.dp)
+                                .clip(CircleShape)
+                                .background(parseSeedHex(hex))
+                                // 选中态用描边表达（M3 的做法，不额外加图标）
+                                .border(
+                                    width = if (selected) 3.dp else 1.dp,
+                                    color = if (selected) MaterialTheme.colorScheme.onSurface
+                                    else MaterialTheme.colorScheme.outlineVariant,
+                                    shape = CircleShape,
+                                )
+                                .clickable { onAccentChange(if (selected) null else hex) },
+                        )
+                    }
+                    if (accentSeed != null) {
+                        TextButton(onClick = { onAccentChange(null) }) {
+                            Text("跟随系统", style = MaterialTheme.typography.labelSmall)
+                        }
                     }
                 }
                 msg?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall) }

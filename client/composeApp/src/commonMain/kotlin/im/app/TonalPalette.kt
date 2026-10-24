@@ -53,6 +53,13 @@ class TonalPalette private constructor(
             return TonalPalette(h, c.coerceIn(36.0, 70.0))
         }
 
+        /** 次级色板：同色相、低彩度（M3 的 secondary 就是这样来的，不会抢主色） */
+        fun secondary(seed: Color): TonalPalette = TonalPalette(hueOf(seed), 16.0)
+
+        /** 三级色板：色相 +60°，中等彩度，用于点缀与强调 */
+        fun tertiary(seed: Color): TonalPalette =
+            TonalPalette((hueOf(seed) + 60.0) % 360.0, 24.0)
+
         /** 中性色板：用于 surface / onSurface 等大面积底色，彩度极低 */
         fun neutral(seed: Color, chroma: Double = 4.0): TonalPalette =
             TonalPalette(hueOf(seed), chroma)

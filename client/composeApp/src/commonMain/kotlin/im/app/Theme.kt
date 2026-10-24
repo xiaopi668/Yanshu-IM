@@ -8,126 +8,138 @@ import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 // ---------- Material You（Material Design 3） ----------
 //
-// 三点让它「像 Material You」：
-//  1. 完整的一套 M3 色调角色（含 surfaceContainer* 五档、inverse*、scrim）——
-//     M3 的层级感靠底色分档表达，而不是靠投影与描边；
-//  2. 配色不是手挑的，而是从品牌色推导出色调板（见 TonalPalette）；
-//  3. Android 12+ 直接跟随系统壁纸取色（动态取色），其它平台用品牌色生成的静态方案。
+// M3 的配色不是手挑的，而是「一个种子色 → 一族同色相不同明度的颜色 → 按角色取 tone」。
+// 因此整套方案只需要一个输入：种子色。换种子色，全站自动重新协调。
 //
-// 圆角用 M3 标准的 4/8/12/16/28，按钮一律 pills（见 UI 层）。
+// 种子从哪来：
+//   - Android 12+：默认取系统壁纸（动态取色）；
+//   - 其它平台（Web/桌面）：没有壁纸这个概念，用户可以自己选一个 —— 这就是 M3 在 Web 上的做法；
+//   - 用户显式选过颜色时，优先用他选的那个（动态取色可以被用户覆盖）。
 
-/** 品牌种子色：新 logo 的主蓝 */
-private val Seed = Color(0xFF2563EB)
-/** 错误色单独一个色板，避免跟着品牌色相漂移 */
-private val ErrorSeed = Color(0xFFB3261E)
+/** 默认种子：品牌蓝（新 logo 主色） */
+const val DEFAULT_SEED_HEX = "2563EB"
 
-private val primaryPalette = TonalPalette.primary(Seed)
-private val secondaryPalette = TonalPalette.primary(Color(0xFF3D6B8C))
-private val tertiaryPalette = TonalPalette.primary(Color(0xFF7C5DBF))
-private val neutralPalette = TonalPalette.neutral(Seed)
-private val neutralVariantPalette = TonalPalette.neutralVariant(Seed)
-private val errorPalette = TonalPalette.primary(ErrorSeed)
-
-private fun materialYouLight(): ColorScheme = lightColorScheme(
-    primary = primaryPalette.tone(40),
-    onPrimary = primaryPalette.tone(100),
-    primaryContainer = primaryPalette.tone(90),
-    onPrimaryContainer = primaryPalette.tone(10),
-    inversePrimary = primaryPalette.tone(80),
-
-    secondary = secondaryPalette.tone(40),
-    onSecondary = secondaryPalette.tone(100),
-    secondaryContainer = secondaryPalette.tone(90),
-    onSecondaryContainer = secondaryPalette.tone(10),
-
-    tertiary = tertiaryPalette.tone(40),
-    onTertiary = tertiaryPalette.tone(100),
-    tertiaryContainer = tertiaryPalette.tone(90),
-    onTertiaryContainer = tertiaryPalette.tone(10),
-
-    error = errorPalette.tone(40),
-    onError = errorPalette.tone(100),
-    errorContainer = errorPalette.tone(90),
-    onErrorContainer = errorPalette.tone(10),
-
-    background = neutralPalette.tone(98),
-    onBackground = neutralPalette.tone(10),
-    surface = neutralPalette.tone(98),
-    onSurface = neutralPalette.tone(10),
-    surfaceVariant = neutralVariantPalette.tone(90),
-    onSurfaceVariant = neutralVariantPalette.tone(30),
-    surfaceTint = primaryPalette.tone(40),
-
-    inverseSurface = neutralPalette.tone(20),
-    inverseOnSurface = neutralPalette.tone(95),
-
-    outline = neutralVariantPalette.tone(50),
-    outlineVariant = neutralVariantPalette.tone(80),
-    scrim = neutralPalette.tone(0),
-
-    surfaceBright = neutralPalette.tone(98),
-    surfaceDim = neutralPalette.tone(87),
-    surfaceContainerLowest = neutralPalette.tone(100),
-    surfaceContainerLow = neutralPalette.tone(96),
-    surfaceContainer = neutralPalette.tone(94),
-    surfaceContainerHigh = neutralPalette.tone(92),
-    surfaceContainerHighest = neutralPalette.tone(90),
+/** 预设主题色（用户可选） */
+val ACCENT_PRESETS = listOf(
+    "2563EB" to "品牌蓝",
+    "00897B" to "青",
+    "6D4C9F" to "紫",
+    "C2185B" to "玫红",
+    "E65100" to "橙",
+    "2E7D32" to "绿",
 )
 
-private fun materialYouDark(): ColorScheme = darkColorScheme(
-    primary = primaryPalette.tone(80),
-    onPrimary = primaryPalette.tone(20),
-    primaryContainer = primaryPalette.tone(30),
-    onPrimaryContainer = primaryPalette.tone(90),
-    inversePrimary = primaryPalette.tone(40),
+private const val ERROR_SEED_HEX = "B3261E"
 
-    secondary = secondaryPalette.tone(80),
-    onSecondary = secondaryPalette.tone(20),
-    secondaryContainer = secondaryPalette.tone(30),
-    onSecondaryContainer = secondaryPalette.tone(90),
+/** 解析 "RRGGBB" / "#RRGGBB"；非法值回落到默认种子 */
+fun parseSeedHex(hex: String): Color {
+    val h = hex.trim().removePrefix("#")
+    if (h.length != 6) return Color(0xFF2563EB)
+    val v = h.toLongOrNull(16) ?: return Color(0xFF2563EB)
+    return Color(0xFF000000 or v)
+}
 
-    tertiary = tertiaryPalette.tone(80),
-    onTertiary = tertiaryPalette.tone(20),
-    tertiaryContainer = tertiaryPalette.tone(30),
-    onTertiaryContainer = tertiaryPalette.tone(90),
+/**
+ * 由种子色推导完整方案。结果按 (种子, 明暗) 缓存 ——
+ * 色调板生成含色域裁剪，不适合每次重组都算一遍。
+ */
+private val schemeCache = mutableMapOf<String, ColorScheme>()
 
-    error = errorPalette.tone(80),
-    onError = errorPalette.tone(20),
-    errorContainer = errorPalette.tone(30),
-    onErrorContainer = errorPalette.tone(90),
+fun materialYouScheme(seedHex: String, dark: Boolean): ColorScheme {
+    val key = seedHex.trim().removePrefix("#").lowercase() + if (dark) ":dark" else ":light"
+    return schemeCache.getOrPut(key) { buildScheme(parseSeedHex(seedHex), dark) }
+}
 
-    background = neutralPalette.tone(6),
-    onBackground = neutralPalette.tone(90),
-    surface = neutralPalette.tone(6),
-    onSurface = neutralPalette.tone(90),
-    surfaceVariant = neutralVariantPalette.tone(30),
-    onSurfaceVariant = neutralVariantPalette.tone(80),
-    surfaceTint = primaryPalette.tone(80),
+private fun buildScheme(seed: Color, dark: Boolean): ColorScheme {
+    val primary = TonalPalette.primary(seed)
+    val secondary = TonalPalette.secondary(seed)
+    val tertiary = TonalPalette.tertiary(seed)
+    val neutral = TonalPalette.neutral(seed)
+    val neutralVariant = TonalPalette.neutralVariant(seed)
+    val error = TonalPalette.primary(parseSeedHex(ERROR_SEED_HEX))
 
-    inverseSurface = neutralPalette.tone(90),
-    inverseOnSurface = neutralPalette.tone(20),
-
-    outline = neutralVariantPalette.tone(60),
-    outlineVariant = neutralVariantPalette.tone(30),
-    scrim = neutralPalette.tone(0),
-
-    surfaceBright = neutralPalette.tone(24),
-    surfaceDim = neutralPalette.tone(6),
-    surfaceContainerLowest = neutralPalette.tone(4),
-    surfaceContainerLow = neutralPalette.tone(10),
-    surfaceContainer = neutralPalette.tone(12),
-    surfaceContainerHigh = neutralPalette.tone(17),
-    surfaceContainerHighest = neutralPalette.tone(22),
-)
-
-/** 静态方案只算一次（色调板生成涉及色域裁剪，不必每帧重算） */
-private val LightScheme: ColorScheme by lazy { materialYouLight() }
-private val DarkScheme: ColorScheme by lazy { materialYouDark() }
+    return if (dark) darkColorScheme(
+        primary = primary.tone(80),
+        onPrimary = primary.tone(20),
+        primaryContainer = primary.tone(30),
+        onPrimaryContainer = primary.tone(90),
+        inversePrimary = primary.tone(40),
+        secondary = secondary.tone(80),
+        onSecondary = secondary.tone(20),
+        secondaryContainer = secondary.tone(30),
+        onSecondaryContainer = secondary.tone(90),
+        tertiary = tertiary.tone(80),
+        onTertiary = tertiary.tone(20),
+        tertiaryContainer = tertiary.tone(30),
+        onTertiaryContainer = tertiary.tone(90),
+        error = error.tone(80),
+        onError = error.tone(20),
+        errorContainer = error.tone(30),
+        onErrorContainer = error.tone(90),
+        background = neutral.tone(6),
+        onBackground = neutral.tone(90),
+        surface = neutral.tone(6),
+        onSurface = neutral.tone(90),
+        surfaceVariant = neutralVariant.tone(30),
+        onSurfaceVariant = neutralVariant.tone(80),
+        surfaceTint = primary.tone(80),
+        inverseSurface = neutral.tone(90),
+        inverseOnSurface = neutral.tone(20),
+        outline = neutralVariant.tone(60),
+        outlineVariant = neutralVariant.tone(30),
+        scrim = neutral.tone(0),
+        surfaceBright = neutral.tone(24),
+        surfaceDim = neutral.tone(6),
+        surfaceContainerLowest = neutral.tone(4),
+        surfaceContainerLow = neutral.tone(10),
+        surfaceContainer = neutral.tone(12),
+        surfaceContainerHigh = neutral.tone(17),
+        surfaceContainerHighest = neutral.tone(22),
+    ) else lightColorScheme(
+        primary = primary.tone(40),
+        onPrimary = primary.tone(100),
+        primaryContainer = primary.tone(90),
+        onPrimaryContainer = primary.tone(10),
+        inversePrimary = primary.tone(80),
+        secondary = secondary.tone(40),
+        onSecondary = secondary.tone(100),
+        secondaryContainer = secondary.tone(90),
+        onSecondaryContainer = secondary.tone(10),
+        tertiary = tertiary.tone(40),
+        onTertiary = tertiary.tone(100),
+        tertiaryContainer = tertiary.tone(90),
+        onTertiaryContainer = tertiary.tone(10),
+        error = error.tone(40),
+        onError = error.tone(100),
+        errorContainer = error.tone(90),
+        onErrorContainer = error.tone(10),
+        background = neutral.tone(98),
+        onBackground = neutral.tone(10),
+        surface = neutral.tone(98),
+        onSurface = neutral.tone(10),
+        surfaceVariant = neutralVariant.tone(90),
+        onSurfaceVariant = neutralVariant.tone(30),
+        surfaceTint = primary.tone(40),
+        inverseSurface = neutral.tone(20),
+        inverseOnSurface = neutral.tone(95),
+        outline = neutralVariant.tone(50),
+        outlineVariant = neutralVariant.tone(80),
+        scrim = neutral.tone(0),
+        surfaceBright = neutral.tone(98),
+        surfaceDim = neutral.tone(87),
+        surfaceContainerLowest = neutral.tone(100),
+        surfaceContainerLow = neutral.tone(96),
+        surfaceContainer = neutral.tone(94),
+        surfaceContainerHigh = neutral.tone(92),
+        surfaceContainerHighest = neutral.tone(90),
+    )
+}
 
 /** M3 标准圆角档位 */
 private val YanshuShapes = Shapes(
@@ -139,17 +151,28 @@ private val YanshuShapes = Shapes(
 )
 
 /**
- * 全局主题：全端共用。
- * Android 12+ 跟随壁纸动态取色；其它平台用品牌色推导的方案。
+ * 全局主题。
+ *
+ * @param seedHex 用户显式选的主题色；传 null 表示「跟随平台默认」——
+ *                Android 12+ 用壁纸动态取色，其它平台用品牌色。
  */
 @Composable
-fun YanshuTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-    val scheme = dynamicColorScheme(dark) ?: if (dark) DarkScheme else LightScheme
+fun YanshuTheme(
+    dark: Boolean = isSystemInDarkTheme(),
+    seedHex: String? = null,
+    content: @Composable () -> Unit,
+) {
+    val scheme: ColorScheme = if (seedHex != null) {
+        // 用户选过的颜色优先：动态取色也要能被覆盖，否则「我选了红色却不生效」
+        remember(seedHex, dark) { materialYouScheme(seedHex, dark) }
+    } else {
+        dynamicColorScheme(dark) ?: remember(dark) { materialYouScheme(DEFAULT_SEED_HEX, dark) }
+    }
     MaterialTheme(colorScheme = scheme, shapes = YanshuShapes, content = content)
 }
 
 /**
- * 平台动态取色：Android 12+（API 31）返回跟随壁纸的配色，其余平台返回 null 以回落到品牌色方案。
+ * 平台动态取色：Android 12+（API 31）返回跟随壁纸的配色，其余平台返回 null。
  */
 @Composable
 expect fun dynamicColorScheme(dark: Boolean): ColorScheme?
