@@ -6,6 +6,8 @@ name: CI
 on:
   push:
     branches: [main]
+    # 打 v* 标签时也跑一遍完整校验：发布前有一次独立的绿灯记录
+    tags: ["v*"]
   pull_request:
 
 jobs:
