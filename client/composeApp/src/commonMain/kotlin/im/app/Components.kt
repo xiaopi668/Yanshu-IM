@@ -21,7 +21,7 @@ import im.client.net.ConnState
 
 // ---------- 通用小部件：头像 / 状态徽标 / 分段切换 ----------
 
-private const val AVATAR_ROLES = 5
+private const val AVATAR_ROLES = 9
 
 /** 按名字取稳定的角色下标，同一个昵称每次进来颜色都一样 */
 private fun avatarRoleIndex(seed: String): Int {
@@ -31,19 +31,18 @@ private fun avatarRoleIndex(seed: String): Int {
 }
 
 /**
- * 头像底色取自当前配色方案的 container 角色（Material You 的做法：
- * 头像不自己发明颜色，而是从主题色调里取 —— 深浅色模式与动态取色都会自动跟随）。
- * 返回「底色 to 文字色」。
+ * 头像配色：优先用主题提供的「调和色板」（从种子派生的 9 个容器色），
+ * 色板缺失时（理论上不会发生）回落到当前的 container 角色。
  */
 @Composable
 private fun avatarColorsFor(seed: String): Pair<Color, Color> {
+    val palette = LocalAvatarPalette.current
+    if (palette.isNotEmpty()) return palette[avatarRoleIndex(seed) % palette.size]
     val s = MaterialTheme.colorScheme
     return when (avatarRoleIndex(seed)) {
         0 -> s.primaryContainer to s.onPrimaryContainer
         1 -> s.secondaryContainer to s.onSecondaryContainer
-        2 -> s.tertiaryContainer to s.onTertiaryContainer
-        3 -> s.errorContainer to s.onErrorContainer
-        else -> s.surfaceContainerHighest to s.onSurface
+        else -> s.tertiaryContainer to s.onTertiaryContainer
     }
 }
 
@@ -94,19 +93,26 @@ fun StatusPill(state: ConnState, modifier: Modifier = Modifier) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SegmentedRow(options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
-    val index = options.indexOfFirst { it.first == selected }.coerceAtLeast(0)
-    PrimaryTabRow(
-        selectedTabIndex = index,
-        containerColor = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.fillMaxWidth(),
+    // M3 的 SegmentedButton：一组连在一起的药丸按钮，选中段用 tonal 底色。
+    // 比 PrimaryTabRow 更贴合这个场景 —— TabRow 的指示器是一条方头细线，
+    // 未选中段还会有整块方角 hover 底色，和 Material You 的圆润观感不搭。
+    SingleChoiceSegmentedButtonRow(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+        space = 0.dp,
     ) {
-        options.forEach { (id, label) ->
-            Tab(
+        options.forEachIndexed { i, (id, label) ->
+            SegmentedButton(
                 selected = selected == id,
                 onClick = { onSelect(id) },
-                text = {
-                    Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                shape = SegmentedButtonDefaults.itemShape(index = i, count = options.size),
+                // 不要勾选图标：只有三个短标签，纯文字更紧凑
+                icon = {},
+                label = {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                    )
                 },
             )
         }

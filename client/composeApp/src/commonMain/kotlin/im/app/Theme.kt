@@ -10,6 +10,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.dp
 
 // ---------- Material You（Material Design 3） ----------
@@ -141,6 +142,34 @@ private fun buildScheme(seed: Color, dark: Boolean): ColorScheme {
     )
 }
 
+/**
+ * 头像用的调和色板：从同一种子派生 9 个深浅不一的容器色。
+ *
+ * 之前只在 5 个角色里按名字取，哈希碰撞很常见 —— 一屏里好几个头像同一个颜色，
+ * 反而不利于区分。这里用「主/次/三级色 × 三档明度」，既保证彼此可区分，
+ * 又都落在同一条色相家族里（M3 的调和思路）。
+ */
+private fun avatarPalette(seedHex: String, dark: Boolean): List<Pair<Color, Color>> {
+    val seed = parseSeedHex(seedHex)
+    val palettes = listOf(
+        TonalPalette.primary(seed),
+        TonalPalette.secondary(seed),
+        TonalPalette.tertiary(seed),
+    )
+    return if (dark) {
+        palettes.flatMap { p ->
+            listOf(p.tone(30) to p.tone(90), p.tone(45) to p.tone(100), p.tone(60) to p.tone(10))
+        }
+    } else {
+        palettes.flatMap { p ->
+            listOf(p.tone(90) to p.tone(10), p.tone(80) to p.tone(20), p.tone(70) to p.tone(10))
+        }
+    }
+}
+
+/** 当前主题下的头像色板，由 YanshuTheme 提供 */
+val LocalAvatarPalette = androidx.compose.runtime.compositionLocalOf<List<Pair<Color, Color>>> { emptyList() }
+
 /** M3 标准圆角档位 */
 private val YanshuShapes = Shapes(
     extraSmall = RoundedCornerShape(4.dp),
@@ -168,7 +197,16 @@ fun YanshuTheme(
     } else {
         dynamicColorScheme(dark) ?: remember(dark) { materialYouScheme(DEFAULT_SEED_HEX, dark) }
     }
-    MaterialTheme(colorScheme = scheme, shapes = YanshuShapes, content = content)
+    // 用「实际生效的 scheme」反推头像色板：动态取色时也跟随系统壁纸，而不是品牌色
+    val avatar = remember(scheme) {
+        avatarPalette(
+            seedHex = seedHex ?: DEFAULT_SEED_HEX,
+            dark = scheme.background.luminance() < 0.5f,
+        )
+    }
+    androidx.compose.runtime.CompositionLocalProvider(LocalAvatarPalette provides avatar) {
+        MaterialTheme(colorScheme = scheme, shapes = YanshuShapes, content = content)
+    }
 }
 
 /**

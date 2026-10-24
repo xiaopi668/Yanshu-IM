@@ -292,7 +292,8 @@ func (s *Service) Pull(ctx context.Context, uid, convID string, afterSeq uint64,
 		limit = pullLimit
 	}
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT server_msg_id, seq, from_uid, msg_type, text, attachment, mention_uids, sent_at
+		// 列允许 NULL，但扫描目标是 string：必须 COALESCE，否则一条 NULL 记录会让整段历史接口 500
+		`SELECT server_msg_id, seq, from_uid, msg_type, COALESCE(text,''), COALESCE(attachment,''), COALESCE(mention_uids,''), sent_at
 		 FROM message WHERE conversation_id=? AND seq>? ORDER BY seq ASC LIMIT ?`,
 		convID, afterSeq, limit+1)
 	if err != nil {
@@ -336,7 +337,7 @@ func (s *Service) PullBefore(ctx context.Context, uid, convID string, beforeSeq 
 		beforeSeq = maxSeq + 1
 	}
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT server_msg_id, seq, from_uid, msg_type, text, attachment, mention_uids, sent_at
+		`SELECT server_msg_id, seq, from_uid, msg_type, COALESCE(text,''), COALESCE(attachment,''), COALESCE(mention_uids,''), sent_at
 		 FROM message WHERE conversation_id=? AND seq<? ORDER BY seq DESC LIMIT ?`,
 		convID, beforeSeq, limit+1)
 	if err != nil {
