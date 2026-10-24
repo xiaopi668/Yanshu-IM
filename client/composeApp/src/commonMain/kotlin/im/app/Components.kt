@@ -21,39 +21,48 @@ import im.client.net.ConnState
 
 // ---------- 通用小部件：头像 / 状态徽标 / 分段切换 ----------
 
-private val avatarPalette = listOf(
-    Color(0xFF2563EB),
-    Color(0xFF0F766E),
-    Color(0xFF7C3AED),
-    Color(0xFFDB2777),
-    Color(0xFFEA580C),
-    Color(0xFF0891B2),
-    Color(0xFF4F46E5),
-    Color(0xFF65A30D),
-)
+private const val AVATAR_ROLES = 5
 
-/** 按名字取稳定色，同一个昵称每次进来颜色都一样 */
-fun avatarColor(seed: String): Color {
+/** 按名字取稳定的角色下标，同一个昵称每次进来颜色都一样 */
+private fun avatarRoleIndex(seed: String): Int {
     var h = 0
     for (ch in seed) h = 31 * h + ch.code
-    val i = ((h % avatarPalette.size) + avatarPalette.size) % avatarPalette.size
-    return avatarPalette[i]
+    return ((h % AVATAR_ROLES) + AVATAR_ROLES) % AVATAR_ROLES
+}
+
+/**
+ * 头像底色取自当前配色方案的 container 角色（Material You 的做法：
+ * 头像不自己发明颜色，而是从主题色调里取 —— 深浅色模式与动态取色都会自动跟随）。
+ * 返回「底色 to 文字色」。
+ */
+@Composable
+private fun avatarColorsFor(seed: String): Pair<Color, Color> {
+    val s = MaterialTheme.colorScheme
+    return when (avatarRoleIndex(seed)) {
+        0 -> s.primaryContainer to s.onPrimaryContainer
+        1 -> s.secondaryContainer to s.onSecondaryContainer
+        2 -> s.tertiaryContainer to s.onTertiaryContainer
+        3 -> s.errorContainer to s.onErrorContainer
+        else -> s.surfaceContainerHighest to s.onSurface
+    }
 }
 
 /** 首字母头像：没有头像图时用昵称首字 + 稳定色 */
 @Composable
 fun Avatar(name: String, size: Dp = 40.dp, round: Boolean = false, modifier: Modifier = Modifier) {
     val fontSize = with(LocalDensity.current) { (size.value * 0.38f).toSp() }
+    val (bg, fg) = avatarColorsFor(name)
     Box(
         modifier
             .size(size)
-            .clip(if (round) CircleShape else RoundedCornerShape((size.value * 0.30f).dp))
-            .background(avatarColor(name)),
+            // M3 容器形状：圆形或 large 档圆角
+            .clip(if (round) CircleShape else MaterialTheme.shapes.large)
+            .background(bg),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             name.trim().take(1).ifEmpty { "?" }.uppercase(),
-            color = Color.White,
+            color = fg,
             fontSize = fontSize,
             fontWeight = FontWeight.SemiBold,
         )

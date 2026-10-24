@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -125,9 +126,9 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
             BrandHeader()
             Spacer(Modifier.height(28.dp))
             Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surface,
-                shadowElevation = 2.dp,
+                // Material You：大圆角 + tonal 表面（靠底色层级表达高度，不用投影）
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 modifier = Modifier.widthIn(max = 440.dp).fillMaxWidth(),
             ) {
                 Column(Modifier.padding(horizontal = 28.dp, vertical = 30.dp)) {
@@ -261,7 +262,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                             }
                         },
                         modifier = Modifier.fillMaxWidth().height(46.dp),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = CircleShape,
                     ) { Text(if (busy) "登录中…" else "登录", style = MaterialTheme.typography.titleSmall) }
 
                     if (isRegister && canRegister) {
@@ -291,7 +292,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                 }
                             },
                             modifier = Modifier.fillMaxWidth().height(46.dp),
-                            shape = RoundedCornerShape(12.dp),
+                            shape = CircleShape,
                         ) { Text("注册并登录", style = MaterialTheme.typography.titleSmall) }
                     }
 
@@ -349,7 +350,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth().height(44.dp),
-                                shape = RoundedCornerShape(12.dp),
+                                shape = CircleShape,
                             ) { Text("使用 ${p.name} 登录") }
                         }
                         if (oidcManual) {
@@ -376,7 +377,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth().height(44.dp),
-                                shape = RoundedCornerShape(12.dp),
+                                shape = CircleShape,
                             ) { Text("完成 OIDC 登录") }
                         }
                     }
@@ -447,7 +448,7 @@ private fun AuthField(
         maxLines = 1,
         visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
         trailingIcon = trailing,
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.extraSmall,
         modifier = Modifier.fillMaxWidth(),
     )
 }
@@ -495,8 +496,8 @@ private fun TurnstileSlot(token: String, renderable: Boolean, err: String? = nul
                     b.left.toInt(), b.top.toInt(), b.width.toInt(), b.height.toInt(),
                 )
             }
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+            .clip(MaterialTheme.shapes.large)
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
         contentAlignment = Alignment.Center,
     ) {
         val (msg, color) = when {

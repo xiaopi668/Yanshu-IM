@@ -333,7 +333,10 @@ fun IncomingCallOverlay(peer: String, onAccept: () -> Unit, onReject: () -> Unit
 
 @Composable
 fun CallingOverlay(peer: String, onCancel: () -> Unit) {
-    Box(Modifier.fillMaxSize().background(Color(0xCC1B1B1F)), contentAlignment = Alignment.Center) {
+    Box(
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f)),
+        contentAlignment = Alignment.Center,
+    ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("正在呼叫 $peer …", color = Color.White, style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(20.dp))
@@ -344,7 +347,10 @@ fun CallingOverlay(peer: String, onCancel: () -> Unit) {
 
 @Composable
 fun InCallOverlay(onHangUp: () -> Unit) {
-    Box(Modifier.fillMaxSize().background(Color(0xCC1B1B1B)), contentAlignment = Alignment.Center) {
+    Box(
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f)),
+        contentAlignment = Alignment.Center,
+    ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("通话中（媒体由平台 WebRTC 承载）", color = Color.White, style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(12.dp))

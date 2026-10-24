@@ -106,6 +106,9 @@ kotlin {
         val desktopMain by getting {
             dependencies { implementation(compose.desktop.currentOs) }
         }
+        val desktopTest by getting {
+            dependencies { implementation(kotlin("test")) }
+        }
         // Android 侧需要 activity-compose 提供 ComponentActivity / setContent /
         // registerForActivityResult —— 这些不在 compose 的通用依赖里
         if (hasAndroidSdk) getByName("androidMain") { dependencies {

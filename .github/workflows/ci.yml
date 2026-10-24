@@ -86,6 +86,12 @@ jobs:
             --tests 'im.client.net.*' \
             --tests 'im.client.api.*' \
             --tests 'im.client.auth.*'
+      # composeApp 自己的单测：主题色调板（Material You 的配色推导规则）在这里
+      - name: 主题单测
+        working-directory: client
+        run: |
+          unset ANDROID_HOME ANDROID_SDK_ROOT
+          ./gradlew --no-daemon :composeApp:desktopTest
       # Web 发行版。此前 CI 从不构建 Web 产物 —— 客户端是四端交付，
       # 而 Web 那端的打包（含静态资源如 favicon）一直没人守。
       - name: 构建 Web 发行版并校验随产物发布的图标
