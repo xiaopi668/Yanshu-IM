@@ -475,10 +475,13 @@ private fun OrDivider() {
 @Composable
 private fun TurnstileSlot(token: String, renderable: Boolean, err: String? = null) {
     var timeout by remember { mutableStateOf(false) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
     LaunchedEffect(token) {
         timeout = false
         if (token.isNotEmpty()) return@LaunchedEffect
-        delay(10_000)
+        // 20s 而不是 10s：Cloudflare 脚本在弱网下经常要十几秒才就绪，
+        // 抢在它前面报"加载失败"只会误导用户（之前就是这样：组件其实已经加载出来了）
+        delay(20_000)
         if (token.isEmpty()) timeout = true
     }
     Spacer(Modifier.height(16.dp))
@@ -490,10 +493,15 @@ private fun TurnstileSlot(token: String, renderable: Boolean, err: String? = nul
     Box(
         Modifier.fillMaxWidth().height(72.dp)
             .onGloballyPositioned { coords ->
+                // boundsInWindow 给的是 Compose px（= CSS px × devicePixelRatio），
+                // 而 DOM 样式用的是 CSS px。HiDPI（浏览器缩放 2 倍）下不换算，
+                // 小组件会被摆到右下角 —— 之前就是这样错位的。
+                val d = density.density
                 val b = coords.boundsInWindow()
                 positionTurnstileWidget(
                     "turnstile-box",
-                    b.left.toInt(), b.top.toInt(), b.width.toInt(), b.height.toInt(),
+                    (b.left / d).toInt(), (b.top / d).toInt(),
+                    (b.width / d).toInt(), (b.height / d).toInt(),
                 )
             }
             .clip(MaterialTheme.shapes.large)

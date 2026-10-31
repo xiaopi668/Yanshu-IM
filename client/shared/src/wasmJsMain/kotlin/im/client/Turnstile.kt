@@ -59,6 +59,10 @@ actual fun renderTurnstileWidget(siteKey: String, containerId: String): Boolean 
             for (attempt in 0 until 40) { // 最多等 20s 脚本就绪
                 if (jsTurnstileReady()) {
                     rendered = jsRenderTurnstile(siteKey, containerId)
+                    // 渲染完成后再摆一次：渲染可能晚于布局，那一次的定位是落空的
+                    lastPlacement?.let { p ->
+                        jsPlaceTurnstile(containerId, p[0], p[1], p[2], p[3])
+                    }
                     break
                 }
                 delay(500)
@@ -93,7 +97,18 @@ actual fun renderTurnstileWidget(siteKey: String, containerId: String): Boolean 
     }
 }
 
+/**
+ * 最后一次布局位置。
+ *
+ * 为什么要记住它：渲染小组件通常发生在拿到布局之后（要先等 Cloudflare 脚本就绪），
+ * 而 onGloballyPositioned 只在布局**变化**时触发。若渲染晚于布局，
+ * 那一次 positionTurnstileWidget 会因为容器还不存在而落空 —— 小组件就永远停在默认位置。
+ * 所以渲染成功后必须用记住的位置再摆一次。
+ */
+private var lastPlacement: IntArray? = null
+
 actual fun positionTurnstileWidget(containerId: String, left: Int, top: Int, width: Int, height: Int) {
+    lastPlacement = intArrayOf(left, top, width, height)
     try {
         jsPlaceTurnstile(containerId, left, top, width, height)
     } catch (_: Throwable) {
