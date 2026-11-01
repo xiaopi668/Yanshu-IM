@@ -44,6 +44,12 @@ type OIDCProvider struct {
 	// RedirectURIs 允许的回跳地址白名单（可选）。
 	// 未配置时只接受本站固定的 /v1/oidc/{name}/callback，防止开放重定向盗取 JWT。
 	RedirectURIs []string `json:"redirect_uris,omitempty"`
+	// ConnectorID 上游 IdP 的连接器 ID（可选）。
+	// 用于 dex 这类「一个 issuer 挂多个 connector」的聚合身份提供方：
+	// 带上它时，authorize 请求会附 &connector_id=xxx，直接跳到指定 connector
+	// （例如 dex 里配了 GitHub / Google / 网盘三个，指定 google 就不用再选一次）。
+	// 留空则维持原有行为：进入 IdP 的选择页。
+	ConnectorID string `json:"connector_id,omitempty"`
 }
 
 // ---------- 存取 ----------
