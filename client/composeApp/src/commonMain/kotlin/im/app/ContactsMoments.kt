@@ -3,7 +3,6 @@ package im.app
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,6 +13,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import im.client.ImClient
 import androidx.compose.foundation.layout.Column
@@ -57,7 +58,7 @@ fun ContactsView(client: ImClient, onOpenChat: (peerUid: String) -> Unit) {
 
     Column(Modifier.fillMaxSize()) {
         // 按雁书号加好友
-        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 yidInput, { yidInput = it },
                 placeholder = { Text("输入雁书号") },
@@ -80,7 +81,7 @@ fun ContactsView(client: ImClient, onOpenChat: (peerUid: String) -> Unit) {
                 enabled = yidInput.isNotBlank(),
             ) { Text("添加") }
         }
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 12.dp)) }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 8.dp)) }
 
         LazyColumn(Modifier.weight(1f)) {
             // 好友申请
@@ -89,20 +90,20 @@ fun ContactsView(client: ImClient, onOpenChat: (peerUid: String) -> Unit) {
                     Text(
                         "新的朋友",
                         style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp),
+                        modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
                     )
                 }
                 items(requests.filter { it.status == "pending" }, key = { it.id }) { req ->
                     Card(
-                        Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         shape = RoundedCornerShape(14.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
                     ) {
-                        Column(Modifier.padding(12.dp)) {
+                        Column(Modifier.padding(8.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Avatar(req.nickname.ifEmpty { req.yid }, size = 36.dp, round = true)
-                                Spacer(Modifier.width(10.dp))
+                                Spacer(Modifier.width(8.dp))
                                 Column {
                                     Text(
                                         req.nickname.ifEmpty { req.yid },
@@ -122,7 +123,7 @@ fun ContactsView(client: ImClient, onOpenChat: (peerUid: String) -> Unit) {
                                     req.message,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(top = 6.dp),
+                                    modifier = Modifier.padding(top = 8.dp),
                                 )
                             }
                             Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -143,7 +144,7 @@ fun ContactsView(client: ImClient, onOpenChat: (peerUid: String) -> Unit) {
                     "通讯录 (${contacts.size})",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 6.dp),
+                    modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
                 )
             }
             if (contacts.isEmpty()) {
@@ -154,14 +155,19 @@ fun ContactsView(client: ImClient, onOpenChat: (peerUid: String) -> Unit) {
                 var editRemark by remember { mutableStateOf(false) }
                 var confirmDelete by remember { mutableStateOf(false) }
                 val name = c.remark.ifEmpty { c.nickname }
+                // 原写法：Row + Modifier.clickable（无涟漪、无按钮语义）。
+                // 现在：Surface 的 onClick 重载，涟漪/焦点/语义都由 M3 提供。
+                Surface(
+                    onClick = { onOpenChat(c.uid) },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color.Transparent,
+                ) {
                 Row(
-                    Modifier.fillMaxWidth().clickable {
-                        onOpenChat(c.uid)
-                    }.padding(horizontal = 16.dp, vertical = 10.dp),
+                    Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Avatar(name, size = 40.dp, round = true)
-                    Spacer(Modifier.width(12.dp))
+                    Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
                             name,
@@ -188,6 +194,7 @@ fun ContactsView(client: ImClient, onOpenChat: (peerUid: String) -> Unit) {
                             )
                         }
                     }
+                }
                 }
                 if (editRemark) {
                     var remark by remember { mutableStateOf(c.remark) }
@@ -254,7 +261,7 @@ fun MomentsView(client: ImClient) {
             if (feed.isEmpty()) {
                 item {
                     Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
-                        Text("还没有动态，点击右下角发布", color = Color.Gray)
+                        Text("还没有动态，点击右下角发布", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -264,7 +271,7 @@ fun MomentsView(client: ImClient) {
                 error!!,
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
+                modifier = Modifier.align(Alignment.BottomStart).padding(8.dp),
             )
         }
         // 发动态按钮
@@ -284,7 +291,7 @@ fun MomentCard(client: ImClient, moment: im.client.api.MomentResp, onChanged: ()
     val scope = rememberCoroutineScope()
     var commentInput by remember { mutableStateOf("") }
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp)) {
+        Column(Modifier.padding(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(moment.nickname, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 if (moment.uid == client.myUid) {
@@ -316,12 +323,20 @@ fun MomentCard(client: ImClient, moment: im.client.api.MomentResp, onChanged: ()
                     cells.chunked(3).forEach { rowImages ->
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             rowImages.forEach { key ->
-                                NetImage(
-                                    api = client.api,
-                                    token = client.myToken,
-                                    key = key,
-                                    modifier = Modifier.size(96.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
-                                )
+                                // 原写法：把 clip + background 挂在图片自己的 Modifier 上。
+                                // 现在：外层 Surface 负责形状与占位底色，图片只填满它。
+                                Surface(
+                                    modifier = Modifier.size(96.dp),
+                                    shape = MaterialTheme.shapes.small,
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                ) {
+                                    NetImage(
+                                        api = client.api,
+                                        token = client.myToken,
+                                        key = key,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                }
                             }
                         }
                         Spacer(Modifier.height(4.dp))
@@ -357,7 +372,7 @@ fun MomentCard(client: ImClient, moment: im.client.api.MomentResp, onChanged: ()
                         Text(
                             "${c.nickname}: ${c.text}",
                             style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(vertical = 2.dp),
+                            modifier = Modifier.padding(vertical = 4.dp),
                         )
                     }
                 }
@@ -479,7 +494,7 @@ fun NetImage(api: im.client.api.Api, token: String, key: String, modifier: Modif
                 modifier = Modifier.fillMaxSize(),
             )
         } else if (failed) {
-            Text("🖼", color = Color.Gray)
+            Text("🖼", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             CircularProgressIndicator(Modifier.size(18.dp))
         }
@@ -543,19 +558,26 @@ fun ProfileDialog(
         title = { Text("我的资料") },
         text = {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                // 头像
-                if (avatarKeyOrNull != null) {
-                    NetImage(
-                        api = client.api,
-                        token = client.myToken,
-                        key = avatarKeyOrNull,
-                        modifier = Modifier.size(64.dp).clip(RoundedCornerShape(32.dp)),
-                    )
-                } else {
-                    Box(
-                        Modifier.size(64.dp).clip(RoundedCornerShape(32.dp)).background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center,
-                    ) { Text(nickname.take(1), style = MaterialTheme.typography.headlineSmall) }
+                // 头像：原写法用 clip(RoundedCornerShape(32.dp)) + background 自绘圆形；
+                // 现在统一交给 Surface（圆形由 CircleShape 表达，底色由 color 提供）。
+                Surface(
+                    modifier = Modifier.size(64.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ) {
+                    if (avatarKeyOrNull != null) {
+                        NetImage(
+                            api = client.api,
+                            token = client.myToken,
+                            key = avatarKeyOrNull,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(nickname.take(1), style = MaterialTheme.typography.headlineSmall)
+                        }
+                    }
                 }
                 TextButton(onClick = {
                     scope.launch {
@@ -614,7 +636,7 @@ fun ProfileDialog(
                 }
                 // 主题色（Material You 的种子色）：Android 12+ 默认跟随壁纸；
                 // Web/桌面没有壁纸，就由用户自己选一个
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(16.dp))
                 Text(
                     if (accentSeed == null) "主题色：跟随系统（Android 12+ 跟随壁纸）" else "主题色：自定义",
                     style = MaterialTheme.typography.labelMedium,
@@ -624,29 +646,39 @@ fun ProfileDialog(
                 Spacer(Modifier.height(8.dp))
                 Row(
                     Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    ACCENT_PRESETS.forEach { (hex, _) ->
+                    // 原写法：Box + clip(CircleShape) + background(hex) + border + clickable —— 
+                    // 一个没有涟漪、没有语义、也不能被键盘聚焦的"假按钮"。
+                    // 现在：IconButton 提供触控面积/涟漪/无障碍语义，Surface 只负责圆形色块。
+                    ACCENT_PRESETS.forEach { (hex, label) ->
                         val selected = accentSeed?.removePrefix("#")?.equals(hex, ignoreCase = true) == true
-                        Box(
-                            Modifier
-                                .size(26.dp)
-                                .clip(CircleShape)
-                                .background(parseSeedHex(hex))
-                                // 选中态用描边表达（M3 的做法，不额外加图标）
-                                .border(
-                                    width = if (selected) 3.dp else 1.dp,
-                                    color = if (selected) MaterialTheme.colorScheme.onSurface
-                                    else MaterialTheme.colorScheme.outlineVariant,
-                                    shape = CircleShape,
+                        IconButton(
+                            onClick = { onAccentChange(if (selected) null else hex) },
+                        ) {
+                            Surface(
+                                modifier = Modifier.size(24.dp),
+                                shape = CircleShape,
+                                color = parseSeedHex(hex),
+                                border = if (selected) {
+                                    androidx.compose.foundation.BorderStroke(3.dp, MaterialTheme.colorScheme.onSurface)
+                                } else {
+                                    androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                                },
+                            ) {
+                                // 选中态同时用描边表达，并给读屏一个可读的名字
+                                Box(
+                                    Modifier.fillMaxSize().semantics {
+                                        contentDescription = if (selected) "主题色 $label（已选中）" else "主题色 $label"
+                                    },
                                 )
-                                .clickable { onAccentChange(if (selected) null else hex) },
-                        )
+                            }
+                        }
                     }
                     if (accentSeed != null) {
                         TextButton(onClick = { onAccentChange(null) }) {
-                            Text("跟随系统", style = MaterialTheme.typography.labelSmall)
+                            Text("跟随系统", style = MaterialTheme.typography.labelMedium)
                         }
                     }
                 }
@@ -717,19 +749,28 @@ fun MessageSearchDialog(client: ImClient, onJump: (convId: String) -> Unit, onDi
                 Spacer(Modifier.height(8.dp))
                 LazyColumn(Modifier.height(260.dp)) {
                     items(results, key = { it.server_msg_id }) { h ->
-                        Column(
-                            Modifier.fillMaxWidth().clickable { onJump(h.conversation_id) }.padding(vertical = 6.dp),
+                        // 原写法：Column + Modifier.clickable（无涟漪）。
+                        // 现在：Surface(onClick) —— 涟漪、焦点与"可点击"语义由 M3 提供。
+                        Surface(
+                            onClick = { onJump(h.conversation_id) },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Color.Transparent,
                         ) {
-                            Text(h.text, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
-                            Text(
-                                "${h.conversation_id.takeLast(8)} · ${momentTimeOf(h.sent_at)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            Column(Modifier.padding(vertical = 8.dp)) {
+                                Text(h.text, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+                                Text(
+                                    "${h.conversation_id.takeLast(8)} · ${momentTimeOf(h.sent_at)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                     if (searched && results.isEmpty()) {
-                        item { Text("无结果", color = Color.Gray) }
+                        item {
+                            // 原写法：Text(color = Color.Gray) 硬编码灰
+                            Text("无结果", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             }
@@ -788,7 +829,7 @@ fun GroupInfoDialog(client: ImClient, convId: String, title: String, onLeft: () 
                     }) { Text("保存公告") }
                 }
                 HorizontalDivider()
-                Text("成员 (${members.size})", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(vertical = 6.dp))
+                Text("成员 (${members.size})", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(vertical = 8.dp))
                 LazyColumn(Modifier.height(200.dp)) {
                     items(members, key = { it.first }) { (uid, nick) ->
                         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -811,7 +852,7 @@ fun GroupInfoDialog(client: ImClient, convId: String, title: String, onLeft: () 
                     }
                 }
                 HorizontalDivider()
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
                         newId, { newId = it },

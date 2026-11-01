@@ -1,15 +1,11 @@
 package im.app
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,40 +42,43 @@ private fun avatarColorsFor(seed: String): Pair<Color, Color> {
     }
 }
 
-/** 首字母头像：没有头像图时用昵称首字 + 稳定色 */
+// 原写法：Box + clip(RoundedCornerShape) + background(bg) 自绘一个圆形/圆角色块。
+// 现在：M3 Surface 提供形状与底色（Surface 自己会裁剪内容），不再手写 clip/background。
 @Composable
 fun Avatar(name: String, size: Dp = 40.dp, round: Boolean = false, modifier: Modifier = Modifier) {
     val fontSize = with(LocalDensity.current) { (size.value * 0.38f).toSp() }
     val (bg, fg) = avatarColorsFor(name)
-    Box(
-        modifier
-            .size(size)
-            // M3 容器形状：圆形或 large 档圆角
-            .clip(if (round) CircleShape else MaterialTheme.shapes.large)
-            .background(bg),
-        contentAlignment = Alignment.Center,
+    Surface(
+        modifier = modifier.size(size),
+        shape = if (round) CircleShape else MaterialTheme.shapes.large,
+        color = bg,
+        contentColor = fg,
     ) {
-        Text(
-            name.trim().take(1).ifEmpty { "?" }.uppercase(),
-            color = fg,
-            fontSize = fontSize,
-            fontWeight = FontWeight.SemiBold,
-        )
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                name.trim().take(1).ifEmpty { "?" }.uppercase(),
+                fontSize = fontSize,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 
-/** 连接状态小圆点 + 文案 */
+// 原写法：三个硬编码色值 Color(0xFF16A34A/0xFFF59E0B/0xFF94A3B8) + Box 画圆点。
+// 现在：圆点交给 Surface，颜色改用语义角色（在线=primary、连接中=tertiary、离线=outline）。
+// 状态同时有文字标签，不靠颜色单独传达 ✅
 @Composable
 fun StatusPill(state: ConnState, modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
     val (label, color) = when (state) {
-        is ConnState.Authenticated -> "在线" to Color(0xFF16A34A)
-        is ConnState.Connecting -> "连接中" to Color(0xFFF59E0B)
-        else -> "离线" to Color(0xFF94A3B8)
+        is ConnState.Authenticated -> "在线" to scheme.primary
+        is ConnState.Connecting -> "连接中" to scheme.tertiary
+        else -> "离线" to scheme.outline
     }
     Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
-        Box(Modifier.size(7.dp).clip(CircleShape).background(color))
-        Spacer(Modifier.width(6.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Surface(modifier = Modifier.size(8.dp), shape = CircleShape, color = color) {}
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
     }
 }
 
@@ -97,7 +96,7 @@ fun SegmentedRow(options: List<Pair<String, String>>, selected: String, onSelect
     // 比 PrimaryTabRow 更贴合这个场景 —— TabRow 的指示器是一条方头细线，
     // 未选中段还会有整块方角 hover 底色，和 Material You 的圆润观感不搭。
     SingleChoiceSegmentedButtonRow(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
         space = 0.dp,
     ) {
         options.forEachIndexed { i, (id, label) ->

@@ -121,23 +121,26 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
     // 当前端根本渲染不出小组件（桌面/Android）时，光等着也没用，要给出替代方案
     val turnstileBlocked = turnstilePending && !turnstileRenderable
 
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        Column(
-            Modifier.fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Spacer(Modifier.height(44.dp))
+    // 原写法：Box(Modifier.fillMaxSize().background(colorScheme.background)) 自绘页面底色。
+    // 现在：M3 Scaffold 作为页面容器，底色由 containerColor 提供。
+    Scaffold(containerColor = MaterialTheme.colorScheme.background) { inner ->
+    Column(
+        Modifier.fillMaxSize()
+            .padding(inner)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+            Spacer(Modifier.height(48.dp))
             BrandHeader()
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(24.dp))
             Surface(
                 // Material You：大圆角 + tonal 表面（靠底色层级表达高度，不用投影）
                 shape = MaterialTheme.shapes.extraLarge,
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 modifier = Modifier.widthIn(max = 440.dp).fillMaxWidth(),
             ) {
-                Column(Modifier.padding(horizontal = 28.dp, vertical = 30.dp)) {
+                Column(Modifier.padding(horizontal = 32.dp, vertical = 32.dp)) {
                     Text(
                         if (isRegister) "注册" else "登录",
                         style = MaterialTheme.typography.titleLarge,
@@ -149,32 +152,31 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.height(22.dp))
+                    Spacer(Modifier.height(24.dp))
 
                     AuthField(
                         username, { username = it },
                         if (isRegister) "用户名（登录名）" else "用户名 / 雁书号 / 邮箱",
                     )
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(16.dp))
                     AuthField(
                         password, { password = it }, "密码",
                         password = !showPassword,
                         trailing = {
-                            Text(
-                                if (showPassword) "隐藏" else "显示",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .clickable { showPassword = !showPassword }
-                                    .padding(horizontal = 8.dp, vertical = 10.dp),
-                            )
+                            // 原写法：Text + clip + clickable + 手动 padding（没有涟漪）。
+                            // 现在：TextButton —— 自带涟漪、无障碍语义与最小触控区。
+                            TextButton(onClick = { showPassword = !showPassword }) {
+                                Text(
+                                    if (showPassword) "隐藏" else "显示",
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            }
                         },
                     )
 
                     // 邮箱只在注册界面出现（服务端无论是否开验证码都会保存）；验证码相关只在站点开启后出现
                     if (isRegister && canRegister) {
-                        Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(16.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.weight(1f)) {
                                 AuthField(email, { email = it }, "邮箱（注册用，可留空）")
@@ -198,10 +200,10 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                             }
                         }
                         if (siteCfg?.email_code_enabled == true) {
-                            Spacer(Modifier.height(14.dp))
+                            Spacer(Modifier.height(16.dp))
                             AuthField(emailCode, { emailCode = it }, "邮箱验证码")
                             if (email.isBlank()) {
-                                Spacer(Modifier.height(6.dp))
+                                Spacer(Modifier.height(8.dp))
                                 Text(
                                     "本站要求邮箱验证码：请先填邮箱并点「发送验证码」",
                                     style = MaterialTheme.typography.labelSmall,
@@ -212,7 +214,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                     } else if (isRegister) {
                         // 之前这里什么都不显示：注册被关闭时整个注册区（含邮箱框）静默消失，
                         // 用户只会以为「注册功能没了 / 找不到填邮箱的地方」。
-                        Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(16.dp))
                         Text(
                             "本站已关闭注册。管理员可在管理后台「认证设置」里勾选「允许注册」后重试。",
                             style = MaterialTheme.typography.labelSmall,
@@ -222,7 +224,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
 
                     // 站点配置没拉到时给个明确提示，否则用户只会看到「这些区域凭空消失」
                     siteCfgErr?.let {
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(8.dp))
                         Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
 
@@ -238,11 +240,11 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                     }
 
                     error?.let {
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(8.dp))
                         Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
                     tip?.let {
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(8.dp))
                         Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
                     }
 
@@ -267,7 +269,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                 busy = false
                             }
                         },
-                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         shape = CircleShape,
                     ) { Text(if (busy) "登录中…" else "登录", style = MaterialTheme.typography.titleSmall) }
 
@@ -297,7 +299,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                     busy = false
                                 }
                             },
-                            modifier = Modifier.fillMaxWidth().height(46.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             shape = CircleShape,
                         ) { Text("注册并登录", style = MaterialTheme.typography.titleSmall) }
                     }
@@ -305,21 +307,21 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                     // 登录 / 注册切换。站点关闭注册时不提供「去注册」，
                     // 但仍要能退回登录，否则会卡在注册界面。
                     if (canRegister || isRegister) {
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            if (isRegister) "已有账号？去登录" else "还没有账号？去注册",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable {
-                                    isRegister = !isRegister
-                                    error = null
-                                    tip = null
-                                    oidcManual = false
-                                }
-                                .padding(horizontal = 8.dp, vertical = 10.dp),
-                        )
+                        Spacer(Modifier.height(8.dp))
+                        // 原写法：Text + clip + clickable。现在：TextButton（自带涟漪与语义）
+                        TextButton(
+                            onClick = {
+                                isRegister = !isRegister
+                                error = null
+                                tip = null
+                                oidcManual = false
+                            },
+                        ) {
+                            Text(
+                                if (isRegister) "已有账号？去登录" else "还没有账号？去注册",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
                     }
 
                     // 第三方登录
@@ -355,21 +357,21 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                         }
                                     }
                                 },
-                                modifier = Modifier.fillMaxWidth().height(44.dp),
+                                modifier = Modifier.fillMaxWidth(),
                                 shape = CircleShape,
                             ) { Text("使用 ${p.name} 登录") }
                         }
                         if (oidcManual) {
-                            Spacer(Modifier.height(10.dp))
+                            Spacer(Modifier.height(8.dp))
                             Text(
                                 "自动回跳不可用，请从授权成功页复制令牌粘贴到下方（管理员可在服务端配置 " +
                                     "IM_OIDC_RETURN_ALLOWLIST 打开自动回跳）",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            Spacer(Modifier.height(10.dp))
+                            Spacer(Modifier.height(8.dp))
                             AuthField(oidcToken, { oidcToken = it }, "OIDC Token")
-                            Spacer(Modifier.height(12.dp))
+                            Spacer(Modifier.height(8.dp))
                             FilledTonalButton(
                                 enabled = oidcToken.isNotBlank() && !busy,
                                 onClick = {
@@ -382,7 +384,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                         }
                                     }
                                 },
-                                modifier = Modifier.fillMaxWidth().height(44.dp),
+                                modifier = Modifier.fillMaxWidth(),
                                 shape = CircleShape,
                             ) { Text("完成 OIDC 登录") }
                         }
@@ -392,27 +394,26 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                     // 既不需要、也不应该看到服务端地址。
                     if (!ImBuildConfig.HIDE_SERVER_CONFIG) {
                         // 服务器地址默认收起，避免和主表单抢视线；改了会自动重新拉站点配置
-                        Spacer(Modifier.height(20.dp))
-                        Text(
-                            if (showConn) "收起服务器地址" else "服务器地址（$apiBase）",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable { showConn = !showConn }
-                                .padding(horizontal = 6.dp, vertical = 6.dp),
-                        )
+                        Spacer(Modifier.height(16.dp))
+                        // 原写法：Text + clip + clickable。现在：TextButton
+                        TextButton(onClick = { showConn = !showConn }) {
+                            Text(
+                                if (showConn) "收起服务器地址" else "服务器地址（$apiBase）",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         if (showConn) {
-                            Spacer(Modifier.height(10.dp))
+                            Spacer(Modifier.height(8.dp))
                             AuthField(apiBase, { apiBase = it }, "API 地址")
-                            Spacer(Modifier.height(14.dp))
+                            Spacer(Modifier.height(16.dp))
                             AuthField(wsBase, { wsBase = it }, "WS 地址")
                         }
                     }
                 }
             }
-            Spacer(Modifier.height(36.dp))
-        }
+            Spacer(Modifier.height(32.dp))
+    }
     }
 }
 
@@ -426,7 +427,7 @@ private fun BrandHeader() {
             contentDescription = "雁书",
             modifier = Modifier.size(56.dp),
         )
-        Spacer(Modifier.width(14.dp))
+        Spacer(Modifier.width(16.dp))
         Column {
             Text("雁书", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(
@@ -468,7 +469,7 @@ private fun OrDivider() {
             " 或 ",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 10.dp),
+            modifier = Modifier.padding(horizontal = 8.dp),
         )
         HorizontalDivider(modifier = Modifier.weight(1f))
     }
@@ -496,8 +497,10 @@ private fun TurnstileSlot(token: String, renderable: Boolean, err: String? = nul
     LaunchedEffect(token) {
         if (token.isNotEmpty()) hideTurnstileWidget("turnstile-box")
     }
-    Box(
-        Modifier.fillMaxWidth().height(72.dp)
+    // 原写法：Box + clip(shapes.large) + background(surfaceContainerHighest) 自绘底色。
+    // 现在：Surface 提供形状与 tonal 底色（Surface 负责裁剪内容）。
+    Surface(
+        modifier = Modifier.fillMaxWidth().height(72.dp)
             .onGloballyPositioned { coords ->
                 // boundsInWindow 给的是 Compose px（= CSS px × devicePixelRatio），
                 // 而 DOM 样式用的是 CSS px。HiDPI（浏览器缩放 2 倍）下不换算，
@@ -509,25 +512,26 @@ private fun TurnstileSlot(token: String, renderable: Boolean, err: String? = nul
                     (b.left / d).toInt(), (b.top / d).toInt(),
                     (b.width / d).toInt(), (b.height / d).toInt(),
                 )
-            }
-            .clip(MaterialTheme.shapes.large)
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
-        contentAlignment = Alignment.Center,
+            },
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
     ) {
-        val (msg, color) = when {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            val (msg, color) = when {
             token.isNotEmpty() -> "✓ 人机验证通过" to MaterialTheme.colorScheme.primary
             // 有具体原因就先说原因（错误码 / 域名不匹配 / 网络不通），比笼统的"加载失败"有用得多
             err != null -> err to MaterialTheme.colorScheme.error
             !renderable -> "人机验证仅 Web 端支持：桌面/Android 请改用浏览器注册，或在管理后台关闭「人机验证」" to MaterialTheme.colorScheme.error
             timeout -> "人机验证组件加载失败（网络或 CSP 拦截了 challenges.cloudflare.com）" to MaterialTheme.colorScheme.error
-            else -> "请在页面下方完成人机验证" to MaterialTheme.colorScheme.onSurfaceVariant
+                else -> "请在页面下方完成人机验证" to MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Text(
+                msg,
+                color = color,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 16.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
         }
-        Text(
-            msg,
-            color = color,
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(horizontal = 14.dp),
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-        )
     }
 }

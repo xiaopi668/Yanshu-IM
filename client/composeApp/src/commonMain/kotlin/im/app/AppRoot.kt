@@ -2,7 +2,6 @@ package im.app
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -15,6 +14,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -132,15 +133,24 @@ fun AppRoot() {
 private fun SplashScreen() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(
-                Modifier.size(56.dp).background(
-                    MaterialTheme.colorScheme.primary,
-                    androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-                ),
-                contentAlignment = Alignment.Center,
-            ) { Text("雁", color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.headlineSmall) }
+            // 原写法：Box + background(primary, RoundedCornerShape(16.dp)) 自绘色块。
+            // 现在：Surface 提供形状与底色；文字颜色用 onPrimary 语义角色。
+            Surface(
+                modifier = Modifier.size(56.dp),
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("雁", style = MaterialTheme.typography.headlineSmall)
+                }
+            }
             Spacer(Modifier.height(16.dp))
-            Text("正在恢复登录状态…", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text(
+                "正在恢复登录状态…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -211,7 +221,7 @@ fun MainScreen(
             Column(Modifier.fillMaxSize()) {
                 // 当前用户：头像 + 昵称 + 连接状态，点击进资料；右侧退出
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Avatar(
@@ -219,16 +229,25 @@ fun MainScreen(
                         size = 42.dp,
                         round = true,
                     )
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f).clickable { showProfile = true }) {
-                        Text(
-                            client.myNickname.ifEmpty { client.myUid.takeLast(6) },
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(Modifier.height(3.dp))
-                        StatusPill(state)
+                    Spacer(Modifier.width(8.dp))
+                    // 原写法：Column + Modifier.clickable（无涟漪、无按钮语义）。
+                    // 现在：M3 Surface 的 onClick 重载 —— 自带涟漪、可聚焦、可无障碍点击。
+                    Surface(
+                        onClick = { showProfile = true },
+                        modifier = Modifier.weight(1f),
+                        shape = MaterialTheme.shapes.medium,
+                        color = Color.Transparent,
+                    ) {
+                        Column(Modifier.padding(vertical = 4.dp)) {
+                            Text(
+                                client.myNickname.ifEmpty { client.myUid.takeLast(6) },
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            StatusPill(state)
+                        }
                     }
                     TextButton(onClick = onLogout) { Text("退出") }
                 }
@@ -248,7 +267,7 @@ fun MainScreen(
                     "moments" -> MomentsView(client)
                     else -> {
                         var showSearch by remember { mutableStateOf(false) }
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp)) {
                             OutlinedButton(
                                 onClick = { showSearch = true },
                                 modifier = Modifier.fillMaxWidth(),
@@ -268,20 +287,25 @@ fun MainScreen(
         }
         VerticalDivider()
         if (selected == null) {
-            Box(
-                Modifier.weight(1f).fillMaxHeight().background(MaterialTheme.colorScheme.background),
-                contentAlignment = Alignment.Center,
+            // 原写法：Box + background(background) / Box + clip + background(primaryContainer)。
+            // 现在：Surface 承载底色与形状。
+            Surface(
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                color = MaterialTheme.colorScheme.background,
             ) {
+                Box(contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(
-                        Modifier.size(76.dp)
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center,
+                    Surface(
+                        modifier = Modifier.size(72.dp),
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                     ) {
-                        Text("雁", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("雁", style = MaterialTheme.typography.headlineMedium)
+                        }
                     }
-                    Spacer(Modifier.height(18.dp))
+                    Spacer(Modifier.height(16.dp))
                     Text(
                         when (tab) {
                             "contacts" -> "从通讯录选一个好友开始聊天"
@@ -291,6 +315,7 @@ fun MainScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
                 }
             }
         } else {
@@ -349,32 +374,45 @@ fun IncomingCallOverlay(peer: String, onAccept: () -> Unit, onReject: () -> Unit
     )
 }
 
+// 原写法：Box + background(scrim) 自绘遮罩，文字用硬编码 Color.White。
+// 现在：Surface 承载遮罩色（scrim），文字用 onInverseSurface —— 深浅色下都可读。
 @Composable
 fun CallingOverlay(peer: String, onCancel: () -> Unit) {
-    Box(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f)),
-        contentAlignment = Alignment.Center,
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f),
+        contentColor = MaterialTheme.colorScheme.inverseOnSurface,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("正在呼叫 $peer …", color = Color.White, style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(20.dp))
-            Button(onClick = onCancel) { Text("取消") }
+        Box(contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("正在呼叫 $peer …", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(24.dp))
+                Button(onClick = onCancel) { Text("取消") }
+            }
         }
     }
 }
 
 @Composable
 fun InCallOverlay(onHangUp: () -> Unit) {
-    Box(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f)),
-        contentAlignment = Alignment.Center,
+    // 同上：Surface 承担遮罩，文字用语义色而不是硬编码白色
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f),
+        contentColor = MaterialTheme.colorScheme.inverseOnSurface,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("通话中（媒体由平台 WebRTC 承载）", color = Color.White, style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(12.dp))
-            Text("音视频画面在通话面板中显示", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(24.dp))
-            Button(onClick = onHangUp) { Text("挂断") }
+        Box(contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("通话中（媒体由平台 WebRTC 承载）", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "音视频画面在通话面板中显示",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.8f),
+                )
+                Spacer(Modifier.height(24.dp))
+                Button(onClick = onHangUp) { Text("挂断") }
+            }
         }
     }
 }
@@ -446,7 +484,7 @@ fun ConversationList(client: ImClient, selected: Conversation?, onSelect: (Conve
                 color = if (isSel) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
                 onClick = { onSelect(conv) },
                 shape = MaterialTheme.shapes.large,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
             ) {
                 // M3 ListItem：leading / headline / supporting / trailing 四段式行版式
                 ListItem(
@@ -471,23 +509,19 @@ fun ConversationList(client: ImClient, selected: Conversation?, onSelect: (Conve
                     trailingContent = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (unread > 0) {
-                                // M3 Badge 的形态：小圆角药丸 + error 配色
-                                Box(
-                                    Modifier
-                                        .background(MaterialTheme.colorScheme.error, CircleShape)
-                                        .padding(horizontal = 7.dp, vertical = 2.dp),
-                                ) {
-                                    Text(
-                                        unread.toString(),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onError,
-                                    )
-                                }
+                                // 原写法：Box + background(error) + 手动 padding 拼一个药丸。
+                                // 现在：M3 Badge —— 未读数用它的标准形态，颜色/圆角/字号由主题给。
+                                Badge { Text(unread.toString()) }
                             }
                             if (conv.type == "group") {
                                 var infoOpen by remember { mutableStateOf(false) }
                                 IconButton(onClick = { infoOpen = true }) {
-                                    Text("⋯", style = MaterialTheme.typography.titleMedium)
+                                    // 可访问性：图标按钮必须有语义描述
+                                    Text(
+                                        "⋯",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        modifier = Modifier.semantics { contentDescription = "群信息" },
+                                    )
                                 }
                                 if (infoOpen) {
                                     GroupInfoDialog(
@@ -524,13 +558,16 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
     }
 
     val title = conversation.title.ifEmpty { conversation.id.takeLast(8) }
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        // 头部：M3 TopAppBar（容器用 surfaceContainer，和 M3 的层级一致）
+    // 原写法：Column + Modifier.background(colorScheme.background) 自绘页面底色。
+    // 现在：M3 Scaffold 作为页面容器 + TopAppBar 直接挂在 topBar 上。
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
         TopAppBar(
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Avatar(title, size = 36.dp, round = true)
-                    Spacer(Modifier.width(12.dp))
+                    Spacer(Modifier.width(8.dp))
                     Column {
                         Text(
                             title,
@@ -555,13 +592,22 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
                             val peer = uids.firstOrNull { it != client.myUid }
                             if (peer != null) client.callController.startCall(peer)
                         },
-                    ) { Text("📞", style = MaterialTheme.typography.titleMedium) }
+                    ) {
+                        Text(
+                            "📞",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.semantics { contentDescription = "发起通话" },
+                        )
+                    }
                 }
             },
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = MaterialTheme.colorScheme.surfaceContainer,
             ),
         )
+        },
+    ) { inner ->
+        Column(Modifier.fillMaxSize().padding(inner)) {
         // 消息列表
         LazyColumn(Modifier.weight(1f), state = listState, contentPadding = PaddingValues(12.dp)) {
             items(msgs, key = { it.serverMsgId.ifEmpty { it.clientMsgId ?: "" } }) { m ->
@@ -573,7 +619,8 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
         // 输入栏
         Surface(color = MaterialTheme.colorScheme.surface) {
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                // 间距统一为 8 的倍数（原来是 14/10）
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(
@@ -587,7 +634,13 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
                             }
                         }
                     },
-                ) { Text("📎", style = MaterialTheme.typography.titleMedium) }
+                ) {
+                    Text(
+                        "📎",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.semantics { contentDescription = "发送附件" },
+                    )
+                }
                 Spacer(Modifier.width(4.dp))
                 // M3 filled TextField + pill 形状（Material You 的聊天输入框就是这样）
                 TextField(
@@ -620,8 +673,9 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
                 it,
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 6.dp),
+                modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp),
             )
+        }
         }
     }
 }
@@ -631,34 +685,28 @@ fun MessageBubble(client: ImClient, m: Msg, mine: Boolean) {
     // 自己的消息尾巴在右下角，对方的在左下角 —— 靠这一处圆角差来区分方向
     val shape = if (mine) RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp)
     else RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp)
-    val base = Modifier
-        .widthIn(max = 340.dp)
-        .clip(shape)
-        .background(if (mine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface)
-        .let { if (mine) it else it.border(1.dp, MaterialTheme.colorScheme.outline, shape) }
+    // 原写法：Box + clip(自定义 RoundedCornerShape) + background(...) + 手动 border 画气泡。
+    // 现在：Surface 承担形状、底色与描边；发送失败时用 Surface 的 onClick 重载拿到涟漪与语义。
+    val bubbleColor = if (mine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
+    val bubbleContent = if (mine) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
 
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
     ) {
         // 发送失败的消息整条可点：点一下用同一个 client_msg_id 重发（服务端幂等，不会重复）
-        val clickableBase = if (m.failed) {
-            base.clickable { m.clientMsgId?.let { id -> client.resend(id) } }
-        } else {
-            base
-        }
-        Box(clickableBase.padding(horizontal = 13.dp, vertical = 9.dp)) {
+        val onBubbleClick = if (m.failed) {
+            { m.clientMsgId?.let { id -> client.resend(id) }; Unit }
+        } else null
+
+        val content: @Composable () -> Unit = {
             SelectionContainer {
                 Column {
                     when (m.msgType) {
                         MsgType.Image, MsgType.File, MsgType.Audio, MsgType.Video -> AttachmentView(client, m)
-                        else -> Text(
-                            m.text,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (mine) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                        )
+                        else -> Text(m.text, style = MaterialTheme.typography.bodyMedium)
                     }
-                    Spacer(Modifier.height(2.dp))
+                    Spacer(Modifier.height(4.dp))
                     Text(
                         when {
                             m.sending -> "发送中…"
@@ -666,10 +714,34 @@ fun MessageBubble(client: ImClient, m: Msg, mine: Boolean) {
                             else -> timeOf(m.sentAt)
                         },
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (mine) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
-                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+        }
+
+        val bubbleModifier = Modifier.widthIn(max = 320.dp)
+        if (onBubbleClick != null) {
+            Surface(
+                onClick = onBubbleClick,
+                modifier = bubbleModifier,
+                shape = shape,
+                color = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            ) {
+                Box(Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) { content() }
+            }
+        } else {
+            Surface(
+                modifier = bubbleModifier,
+                shape = shape,
+                color = bubbleColor,
+                contentColor = bubbleContent,
+                border = if (mine) null else androidx.compose.foundation.BorderStroke(
+                    1.dp, MaterialTheme.colorScheme.outlineVariant,
+                ),
+            ) {
+                Box(Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) { content() }
             }
         }
     }
