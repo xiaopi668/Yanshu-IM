@@ -9,7 +9,12 @@
 ## 0. 一句话目标
 
 让 Android 端的 1v1 通话**真的有声音**：App 内接听后能入会、能说话、能听到对方、
-挂断后麦克风立刻释放。Web 端已经跑通，Android 目前是"假 InCall"。
+挂断后麦克风立刻释放。
+
+**当前状态（2026-11）**：Android 媒体面已经接完 —— 阶段 1–5 全部落地（见 §2.2、§5），
+「connect → 真开麦 → 挂断释放」三段都有代码与单测守护；**真机互拨、麦克风指示灯、
+切后台保活仍需人工按 §7 验收**（没在设备上听过声音就不要打勾，见 §8 最后一条）。
+三端现状：Web 与 Android 已跑通，桌面走 Rust 侧车（`desktop-call/`，见 §9）；视频（阶段 6）与蓝牙 SCO 未做。
 
 ---
 
@@ -41,16 +46,27 @@
 | `livekit_url` 下发 | `GET /v1/site-config` 的 `livekit_url` | ✅ 可用（部署需配 `IM_LIVEKIT_HOST`） |
 | 通话状态机 + 媒体状态 | `CallController`（`CallState` / `CallMediaState` / `CallUiState`） | ✅ 可用 |
 | Web 端媒体面 | `client/shared/src/wasmJsMain/.../MediaSession.wasm.kt` | ✅ 已跑通，**可作参考实现** |
-| 通话 UI（接听/呼叫/通话中） | `client/composeApp/src/commonMain/.../AppRoot.kt` | ✅ 可用（含静音/挂断按钮） |
+| 通话 UI（接听/呼叫/通话中） | `client/composeApp/src/commonMain/.../AppRoot.kt` | ✅ 可用（含静音/挂断/免提/时长） |
+| **Android 端媒体面** | `client/shared/src/androidMain/.../call/*.kt` | ✅ 已实现（LiveKit 2.29.2，阶段 1–5） |
 
-### 2.2 缺的部分（就是你要做的）
+### 2.2 本次补齐的部分（实现清单）
 
 ```
-client/shared/src/androidMain/kotlin/im/client/call/MediaSession.kt
+client/shared/src/androidMain/kotlin/im/client/call/
+├── MediaSession.kt            # LiveKit 房间：connect → 真开麦 → 释放；失败原因翻成人话
+├── CallPermissions.kt         # RECORD_AUDIO / POST_NOTIFICATIONS 运行时权限（宿主注入 launcher）
+├── CallAudioRouter.kt         # MODE_IN_COMMUNICATION + 音频焦点 + 听筒/免提 + 拔耳机自动关免提
+├── CallService.kt             # microphone 类型前台服务 + 通知栏「挂断」
+└── CallMediaExtras.android.kt # 免提/重连/权限被拒三态：expect object 的 Android actual
+client/shared/src/commonMain/kotlin/im/client/call/
+├── CallMediaExtras.kt         # 平台附加能力的 expect（MediaSession 签名不动，能力走这层旁路）
+└── CallActions.kt             # 挂断动作登记表：通知栏 → CallController 的唯一通路
+client/shared/src/desktopTest/kotlin/im/client/call/
+└── CallMediaStateTest.kt      # 媒体状态迁移 7 例（含 leave/join 竞态）
 ```
 
-当前内容是 `UnsupportedMediaSession`：`supported = false`，三个方法都是空实现。
-**你的核心工作就是把它换成真正的 LiveKit 实现。**
+宿主侧接入点：`client/composeApp/src/androidMain/AndroidManifest.xml`（权限 + service）、
+`client/composeApp/src/androidMain/kotlin/im/app/MainActivity.kt`（权限 launcher 注入）。
 
 ---
 
@@ -90,6 +106,34 @@ expect fun createMediaSession(): MediaSession
 
 **不要**在 `MediaSession` 里改 `CallController` 的状态；状态由 `CallController` 回填。
 
+### 3.4 平台附加能力与两条硬约束（实现时新增，改动前先读）
+
+`MediaSession` 的签名不动，Android 专有的东西走旁路：
+
+```kotlin
+// commonMain：expect object，Android 有真实现，Web/桌面是常量
+object CallMediaExtras {
+    val speakerOn: StateFlow<Boolean>       // 免提（听筒 ↔ 外放）
+    val speakerSupported: Boolean           // false 时 UI 不渲染免提按钮
+    val reconnecting: StateFlow<Boolean>    // 接通后的媒体重连
+    val micPermissionBlocked: StateFlow<Boolean>  // 「不再询问」→ UI 给「去设置」
+    fun setSpeaker(on: Boolean); fun toggleSpeaker(); fun openAppSettings(): Boolean
+}
+// commonMain：系统通知栏拿不到 CallController，也不该持有 Activity
+object CallActions { var hangUp: (() -> Unit)?; var peerLabel: String; fun requestHangUp(): Boolean }
+```
+
+两条硬约束（都是从真实故障里换来的）：
+
+1. **媒体层不能自己改 `CallController` 状态**。房间被动断开（对端挂断、被踢、网络断、
+   重连超时）时，Android 侧只调 `CallActions.requestHangUp()`，让信令侧统一收尾 ——
+   否则同一次结束会走两遍状态机。
+2. **`leave()` 与 `join()` 的竞态必须两边都收**。挂断可能落在「`join` 已发起、还没返回」
+   的窗口里：此时 `leave()` 只能置一个「已请求离开」标记。所以 `CallController` 在丢弃
+   晚到的 join 结果时**必须再补一次 `media.leave()`**，否则这一轮连上来的房间与麦克风
+   没人收（系统状态栏麦克风指示灯一直亮）。回归用例：
+   `CallMediaStateTest.hangupDuringJoinReleasesMediaThatLandsLate`。
+
 ### 3.3 令牌与地址
 
 - `url` 来自 `/v1/site-config` 的 `livekit_url`，部署侧会配成 `wss://...`
@@ -114,7 +158,20 @@ expect fun createMediaSession(): MediaSession
 
 ## 5. 实施步骤（按阶段提交，每阶段都能独立验收）
 
-### 阶段 1：依赖、权限、最小可通话
+> **落地状态**：阶段 1–5 已全部实现（代码清单见 §2.2）。下面保留原始步骤作为对照与验收依据 ——
+> 骨架里的 API 名称已按 `io.livekit:livekit-android` **2.29.2** 校正过（见 §6.7）。
+> 跳过未做的只有阶段 6（视频）与蓝牙路由。
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| 1 | 依赖 + 权限 + 最小可通话 | ✅ `MediaSession.kt` / `CallPermissions.kt` |
+| 2 | 音频路由（听筒/免提/焦点） | ✅ `CallAudioRouter.kt`（蓝牙 SCO 未做，见 §6.10） |
+| 3 | 前台服务（microphone 类型） | ✅ `CallService.kt` |
+| 4 | 界面（时长/免提/可操作提示） | ✅ `AppRoot.kt` 的 `InCallOverlay` |
+| 5 | 异常路径（权限/重连/被动断开） | ✅ 事件回调 + `CallActions.requestHangUp()` |
+| 6 | 视频 | ⬜ 未做（可选） |
+
+### 阶段 1：依赖、权限、最小可通话（✅ 已实现）
 
 **改哪里**
 
@@ -169,17 +226,26 @@ private object AndroidMediaSession : MediaSession {
 actual fun createMediaSession(): MediaSession = AndroidMediaSession
 ```
 
-> 上面的 API 名称以 `io.livekit:livekit-android` 当前版本为准，可能需要按实际版本调整；
-> 关键是三件事：**connect(url, token) → 开麦 → 断线/挂断时关麦并 disconnect**。
+> 上面的骨架是**起点**，实际实现（`MediaSession.kt`，380 行）在这些点上与它不同，
+> 接手时以代码为准：
+>
+> - 建房间要带音频类型，否则语音走媒体通道（外放）：
+>   `LiveKit.create(ctx, RoomOptions(), LiveKitOverrides(audioOptions = AudioOptions(audioOutputType = AudioType.CallAudioType())))`
+> - `connect` / `setMicrophoneEnabled` 都是 **suspend**，后者返回 `Boolean`（`false` 也算失败）；
+> - `leave()` 里除了关麦 + `disconnect()`，还要停前台服务、取消事件订阅、恢复音频路由；
+> - 入会/挂断用 `Mutex` 串行化，释放过程放在 `NonCancellable` 里（界面销毁不能吞掉关麦）；
+> - 失败原因统一由 `explainFailure()` 翻译（网络层 → 令牌层 → 兜底 message）。
 
-**权限申请**：`RECORD_AUDIO` 是运行时权限，必须**在用户点击"接听"的手势里**发起
-（和 Web 端 `input.click()` 必须留在手势调用栈是同一类问题）。
-推荐在 `MainActivity` 注册 `ActivityResultContracts.RequestPermission`，
-把结果通过一个共享的挂起函数暴露给 `MediaSession`（参考 `AndroidFilePicker` 的注入方式：
+**权限申请**：`RECORD_AUDIO` 是运行时权限，在 `MainActivity` 注册
+`ActivityResultContracts.RequestPermission`，再注入给 shared 层（与 `AndroidFilePicker` 同一范式，
+shared 层拿不到 Activity）：
 
 ```kotlin
-// MainActivity.onCreate
-CallPermissions.request = { perm -> permissionLauncher.launch(perm) }
+// MainActivity.onCreate —— 实际签名见 CallPermissions.kt
+CallPermissions.launch = { perm -> onMain { micPermissionLauncher.launch(perm) } }
+CallPermissions.shouldShowRationale = { perm -> shouldShowRequestPermissionRationale(perm) }
+CallPermissions.notifications = { perm -> onMain { notificationPermissionLauncher.launch(perm) } }
+// MediaSession 侧：suspend fun requestMic(ctx): MicPermission  →  Granted / Denied / Blocked（三态）
 ```
 
 **验收**
@@ -190,7 +256,7 @@ CallPermissions.request = { perm -> permissionLauncher.launch(perm) }
 
 ---
 
-### 阶段 2：音频路由（听筒 / 扬声器 / 蓝牙）
+### 阶段 2：音频路由（听筒 / 扬声器 / 蓝牙）（✅ 已实现，蓝牙 SCO 未做）
 
 **为什么必须做**：不设置 `AudioManager` 的话，声音会走媒体流（喇叭外放），
 通话场景下既不礼貌也听不清。
@@ -212,7 +278,7 @@ CallPermissions.request = { perm -> permissionLauncher.launch(perm) }
 
 ---
 
-### 阶段 3：前台服务（通话不能被杀）
+### 阶段 3：前台服务（通话不能被杀）（✅ 已实现）
 
 **为什么必须做**：Android 12+ 后台麦克风会被系统回收；用户切到别的 App 再回来，
 通话可能已经断了。
@@ -235,7 +301,7 @@ CallPermissions.request = { perm -> permissionLauncher.launch(perm) }
 
 ---
 
-### 阶段 4：界面
+### 阶段 4：界面（✅ 已实现）
 
 现有 `InCallOverlay` 已经显示媒体状态（Connecting / Connected / Failed / Unsupported）
 和静音/挂断按钮，**这里只需要补**：
@@ -250,7 +316,7 @@ CallPermissions.request = { perm -> permissionLauncher.launch(perm) }
 
 ---
 
-### 阶段 5：异常路径
+### 阶段 5：异常路径（✅ 已实现）
 
 | 场景 | 期望行为 |
 |---|---|
@@ -308,29 +374,61 @@ Box(Modifier.size(160.dp, 120.dp).clip(MaterialTheme.shapes.medium)) {
 6. **游标类 bug 要用测试钉住**
    本项目的数据同步曾因"本地游标被服务端 last_seq 顶替"两次回归
    （见 `MemoryStoreTest.setConversationsMustNotAdvanceMaxSeq`）。
-   同理：媒体状态的迁移（Idle→Connecting→Connected→Idle）值得写一条状态机测试。
+   同理：媒体状态的迁移（Idle→Connecting→Connected→Idle）值得写一条状态机测试 ——
+   现在有 `CallMediaStateTest`（7 例，含 leave/join 竞态）。
+
+7. **LiveKit 的 AAR 清单会带进摄像头 / 屏幕共享权限与服务**
+   `io.livekit:livekit-android` 自带的清单声明了 `CAMERA`、
+   `FOREGROUND_SERVICE_MEDIA_PROJECTION`，还有一个
+   `foregroundServiceType=mediaProjection` 的 `ScreenCaptureService`。
+   只做语音时三样都必须用 `tools:node="remove"` 摘掉，否则应用详情页会显示「相机」权限、
+   清单里躺着一个屏幕捕获服务（用户不信任、渠道审核也过不了）。两个坑：
+   - `uses-permission` 的 remove 写在 `<manifest>` 下，`service` 的 remove 必须写在
+     `<application>` 里 —— 写错位置 merger **静默忽略**，构建照样成功但组件还在；
+   - 核对以**打完的 APK** 为准，不看源文件：
+     `aapt2 dump permissions app-debug.apk`、`aapt2 dump xmltree --file AndroidManifest.xml app-debug.apk | grep service`。
+
+8. **`livekit-android` 的传递依赖只发布在 JitPack**
+   它的音频路由依赖 `com.github.davidliu:audioswitch` 只有 JitPack 有。仓库若只配了
+   mavenCentral/google，失败发生在**依赖解析**阶段（不是编译阶段，报 "Could not find"）。
+   见 `client/settings.gradle.kts` 里按分组限定的 JitPack 仓库。
+
+9. **`leave()` 与晚到的 `join()` 竞态**（细说见 §3.4 第 2 条）
+   挂断落在「join 已发起、还没返回」的窗口时，`leave()` 只能置标记；丢弃 join 结果时
+   必须补一次 `media.leave()`，否则这一轮连上来的房间与麦克风没人收。
+
+10. **`AudioType.CallAudioType()` 决定"声音从哪出来"**
+    不传它，LiveKit 走媒体通道（喇叭外放）；传了才是
+    `MODE_IN_COMMUNICATION + STREAM_VOICE_CALL + USAGE_VOICE_COMMUNICATION`。
+    蓝牙 SCO 仍未接（`BLUETOOTH_CONNECT` 未申请 —— audioswitch 在未授权时会抛异常），
+    要做蓝牙得在「申请」与「失败降级」两处一起补。
 
 ---
 
 ## 7. 验收清单（交付前逐条打勾）
 
-**功能**
+**功能（必须真机，当前未验证 —— 不要在没有设备证据时打勾）**
 
 - [ ] A 呼叫 B，B 接听，双方能听到对方（真实两台设备，非同一台模拟器）
 - [ ] 静音后对方听不到，取消静音恢复
 - [ ] 挂断后麦克风指示器消失（系统状态栏）
 - [ ] 拒接 / 对方取消 / 超时 三条路径都能回到 Idle，且不残留媒体资源
-- [ ] 通话中切换 WiFi↔移动网络，能自动重连
+- [ ] 通话中切换 WiFi↔移动网络，能自动重连（20s 未恢复会自动挂断，见 §5 阶段 5）
 - [ ] 后台（Home 键）30 秒后回来仍在通话（阶段 3）
 - [ ] 权限被拒时给出可操作提示，不卡在 Connecting
+- [ ] 通知栏「正在通话」出现，「挂断」能结束通话；声音默认从听筒出，免提可切
 
-**代码**
+**代码（本地已跑通，2026-11-01；命令可直接复制）**
 
-- [ ] `./gradlew :composeApp:compileKotlinDesktop` 通过（common 没被破坏）
-- [ ] `./gradlew :composeApp:compileKotlinWasmJs` 通过
-- [ ] `./gradlew :composeApp:assembleDebug` 出包
-- [ ] `./gradlew :shared:desktopTest` 通过
-- [ ] 没有把 Android 专有 API 泄进 `commonMain`
+- [x] `./gradlew :composeApp:compileKotlinDesktop` 通过（common 没被破坏）
+- [x] `./gradlew :composeApp:compileKotlinWasmJs` 通过
+- [x] `./gradlew :shared:compileKotlinDesktop :composeApp:compileKotlinDesktop` 通过
+- [x] `./gradlew :composeApp:assembleDebug` 出包（`client/composeApp/build/outputs/apk/debug/composeApp-debug.apk`）
+- [x] `./gradlew :shared:desktopTest --tests 'im.client.call.*'` 通过（媒体状态机 7 例）
+- [x] `./gradlew :shared:desktopTest` 的 CI 子集（proto/store/net/api/auth）通过
+- [x] `./gradlew :composeApp:desktopTest` 通过
+- [x] 没有把 Android 专有 API 泄进 `commonMain`（免提/重连/设置入口都走 `CallMediaExtras`）
+- [ ] `android` CI job 仍然全绿（推送后由 CI 验证，本地只能证明同一条命令通过）
 
 ---
 
@@ -340,6 +438,11 @@ Box(Modifier.size(160.dp, 120.dp).clip(MaterialTheme.shapes.medium)) {
 - **不要动**：`CallController` 的状态机语义、信令协议、`MediaSession` 接口签名
   （要改先在 PR 里说明理由）
 - **不要引入**除 `io.livekit:livekit-android` 之外的 UI 依赖；M3 组件已够用
+  （Android 侧的通知用系统 `Notification.Builder`，没有引 androidx.core/media；
+  权限检查用 `Context.checkSelfPermission`）
+- **依赖声明位置**：版本在 `client/gradle/libs.versions.toml`（`livekitAndroid`），
+  `client/shared/build.gradle.kts` 的 `androidMain` 里 `implementation(libs.livekit.android)`；
+  仓库在 `client/settings.gradle.kts`（多了 JitPack，见 §6.8）
 - **构建注记**：本仓库用 AGP 9.4.1 + Compose 1.12，配了兼容开关
   `android.builtInKotlin=false` / `android.newDsl=false`（见 `client/composeApp/build.gradle.kts`
   顶部注释）。加依赖时不要改这些开关，也不要顺手升级 AGP/Gradle。
@@ -355,7 +458,13 @@ Box(Modifier.size(160.dp, 120.dp).clip(MaterialTheme.shapes.medium)) {
 | 作用 | 路径 |
 |---|---|
 | 媒体面接口 + expect | `client/shared/src/commonMain/kotlin/im/client/call/MediaSession.kt` |
-| **要改的 Android 实现** | `client/shared/src/androidMain/kotlin/im/client/call/MediaSession.kt` |
+| **Android 实现（LiveKit）** | `client/shared/src/androidMain/kotlin/im/client/call/MediaSession.kt` |
+| Android 权限桥（麦克风/通知） | `client/shared/src/androidMain/kotlin/im/client/call/CallPermissions.kt` |
+| Android 音频路由/焦点/免提 | `client/shared/src/androidMain/kotlin/im/client/call/CallAudioRouter.kt` |
+| 通话前台服务 + 通知栏挂断 | `client/shared/src/androidMain/kotlin/im/client/call/CallService.kt` |
+| Android 附加能力 actual | `client/shared/src/androidMain/kotlin/im/client/call/CallMediaExtras.android.kt` |
+| 平台附加能力 expect / 挂断登记表 | `client/shared/src/commonMain/kotlin/im/client/call/{CallMediaExtras,CallActions}.kt` |
+| 媒体状态机测试 | `client/shared/src/desktopTest/kotlin/im/client/call/CallMediaStateTest.kt` |
 | 参考实现（Web，已跑通） | `client/shared/src/wasmJsMain/kotlin/im/client/call/MediaSession.wasm.kt` |
 | 信令状态机 + 媒体状态 | `client/shared/src/commonMain/kotlin/im/client/CallController.kt` |
 | 通话界面 | `client/composeApp/src/commonMain/kotlin/im/app/AppRoot.kt`（`InCallOverlay` 等） |
@@ -375,15 +484,19 @@ Box(Modifier.size(160.dp, 120.dp).clip(MaterialTheme.shapes.medium)) {
 | 桌面 `MediaSession` 实现 | `client/shared/src/desktopMain/kotlin/im/client/call/MediaSession.kt` |
 | 媒体异常上报 | `MediaSession.setOnBroken(...)`（`CallController` 会置为 Failed） |
 
-外部参考：LiveKit Android SDK 文档（`io.livekit:livekit-android`）——请以当前版本为准，
-本仓库不锁定其版本，接入时在 `shared/build.gradle.kts` 的 `androidMain` 中声明。
+外部参考：LiveKit Android SDK 文档（`io.livekit:livekit-android`）。版本钉在
+`client/gradle/libs.versions.toml` 的 `livekitAndroid`（当前 **2.29.2**）——升级后必须重跑
+`:composeApp:assembleDebug`，并核对 `MediaSession.kt` 用到的 API（`LiveKit.create` /
+`Room.connect` / `setMicrophoneEnabled` / `RoomEvent.*` 在不同大版本间改过签名）。
+**没有**官方的 "app 清单最小集" 文档：合并清单要自己 dump 出来核对（见 §6.7）。
 
 ---
 
 ## 10. 完成定义（Definition of Done）
 
-1. 两台真机（或真机 + 浏览器）能互相通话并听清
-2. 挂断后无残留：麦克风指示器消失、通知消失、回到 Idle
-3. 三个编译目标 + 单测 + CI 全绿
-4. `MediaSession.kt` 的注释如实描述实现状态（不要再留下"暂未实现"）
-5. 本文件的 §7 验收清单全部打勾，并把验证方式写进 commit message
+1. 两台真机（或真机 + 浏览器）能互相通话并听清 — **未验证（需要设备）**
+2. 挂断后无残留：麦克风指示器消失、通知消失、回到 Idle — **未验证（需要设备）**
+3. 三个编译目标 + 单测 + CI 全绿 — 编译与单测已绿；CI 待推送后确认
+4. `MediaSession.kt` 的注释如实描述实现状态 — ✅（接口与各端实现的注释都已更新）
+5. 本文件的 §7 验收清单全部打勾，并把验证方式写进 commit message — 代码项已勾，
+   功能项等真机；提交说明需写清「本地方便复现的命令 + 未验证项」

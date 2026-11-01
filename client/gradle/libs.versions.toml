@@ -9,6 +9,9 @@ composePlugin = "1.12.0"
 kotlinxBrowser = "0.5.0"
 sqldelight = "2.1.0"
 androidxActivity = "1.13.0"
+# LiveKit Android SDK（通话媒体面）。仓库不跟它的发版节奏走，升级只改这一行，
+# 升级后必须重新跑 :composeApp:assembleDebug 并核对 MediaSession.kt 里用到的 API。
+livekitAndroid = "2.29.2"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -23,6 +26,8 @@ sqldelight-sqlite = { module = "app.cash.sqldelight:sqlite-driver", version.ref 
 sqldelight-android = { module = "app.cash.sqldelight:android-driver", version.ref = "sqldelight" }
 # Android 专用：ComponentActivity + setContent + Activity Result API
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }
+# Android 通话媒体面（只在 shared 的 androidMain 引用；Web 用 livekit-client，桌面无实现）
+livekit-android = { module = "io.livekit:livekit-android", version.ref = "livekitAndroid" }
 # engines（各 source set 按需引用）
 ktor-engine-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
 ktor-engine-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }

@@ -2,11 +2,14 @@ package im.app
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import im.client.auth.AndroidOidc
+import im.client.call.CallPermissions
 import im.client.db.appContext
 import im.client.file.AndroidFilePicker
 
@@ -17,6 +20,25 @@ class MainActivity : ComponentActivity() {
             AndroidFilePicker.onResult(uri)
         }
 
+    /** RECORD_AUDIO：通话前的麦克风授权（CallPermissions 挂起等待这个结果） */
+    private val micPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            CallPermissions.onResult(granted)
+        }
+
+    /** POST_NOTIFICATIONS（Android 13+）：只影响「正在通话」通知条，不影响通话本身 */
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            CallPermissions.onNotificationResult(granted)
+        }
+
+    /** 权限 launcher 只能在主线程调用；MediaSession 的调用点虽在主线程，这里仍做一次兜底 */
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun onMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) block() else mainHandler.post(block)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // SQLDelight 的 AndroidSqliteDriver 需要 Context，先给 shared 层赋值（应用级，避免 Activity 泄漏）
@@ -25,6 +47,11 @@ class MainActivity : ComponentActivity() {
         //（shared 拿不到 Activity，这是唯一的接入点；不注入时 pickFile() 返回 null）
         AndroidFilePicker.launch = { mimes -> pickFileLauncher.launch(mimes) }
         AndroidFilePicker.resolver = contentResolver
+        // 通话权限：launcher 只能由 Activity 注册，所以和选文件一样从宿主注入。
+        // shouldShowRationale 决定「再弹一次」还是「只能去系统设置」（MicPermission.Blocked）。
+        CallPermissions.launch = { perm -> onMain { micPermissionLauncher.launch(perm) } }
+        CallPermissions.shouldShowRationale = { perm -> shouldShowRequestPermissionRationale(perm) }
+        CallPermissions.notifications = { perm -> onMain { notificationPermissionLauncher.launch(perm) } }
         // OIDC 回调：App 被回收后由 yanshu:// deep link 冷启动，令牌就在这个 Intent 里
         AndroidOidc.onUri(intent?.data)
         // Material 3 要求 edge-to-edge：内容画到系统栏后面，由 Scaffold 的

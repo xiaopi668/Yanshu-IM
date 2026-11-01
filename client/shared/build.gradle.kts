@@ -38,6 +38,9 @@ kotlin {
         if (hasAndroidSdk) getByName("androidMain") { dependencies {
             implementation(libs.ktor.engine.okhttp)
             implementation(libs.sqldelight.android)
+            // 通话媒体面：LiveKit Android SDK。Web 端走随产物发的 livekit-client，
+            // 桌面没有官方 Kotlin SDK（维持 supported=false），因此只有这里引。
+            implementation(libs.livekit.android)
         } }
         val wasmJsMain by getting { dependencies {
             implementation(libs.ktor.engine.js)

@@ -7,10 +7,14 @@ package im.client.call
  * 各端在这里接入：
  *
  * - Web（wasm）：livekit-client（随包发，不依赖 CDN）
- * - Android / 桌面：暂未实现，[supported] 返回 false，UI 会明确提示「该平台暂不支持通话」
+ * - Android（androidMain）：LiveKit Android SDK（connect → 开麦 → 退出时释放）
+ * - 桌面：没有官方 Kotlin SDK，[supported] 返回 false，UI 会明确提示「该平台暂不支持通话」
  *
  * 做成接口 + expect/actual 是因为三端媒体栈完全不同（浏览器 WebRTC / webrtc-android /
  * 桌面没有官方 Kotlin SDK），而信令与 UI 应当共用一份。
+ *
+ * 平台专有的**附加能力**（免提、重连提示、跳系统设置）不在这个接口里，见 [CallMediaExtras]：
+ * 接口签名是三端共用的契约，不为单一平台去改它。
  */
 interface MediaSession {
     /** 该平台是否支持通话媒体 */
