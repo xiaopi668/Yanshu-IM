@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 
 // ---------- Material You（Material Design 3） ----------
@@ -170,6 +171,22 @@ private fun avatarPalette(seedHex: String, dark: Boolean): List<Pair<Color, Colo
 /** 当前主题下的头像色板，由 YanshuTheme 提供 */
 val LocalAvatarPalette = androidx.compose.runtime.compositionLocalOf<List<Pair<Color, Color>>> { emptyList() }
 
+/**
+ * 把当前平台字体套到整套 M3 字阶上。
+ * Compose 没有「全局默认字体」这种开关，只能逐个 TextStyle 覆盖 —— 但只在这里写一次。
+ */
+private fun androidx.compose.material3.Typography.withFamily(f: FontFamily?): androidx.compose.material3.Typography {
+    if (f == null) return this
+    fun androidx.compose.ui.text.TextStyle.c() = copy(fontFamily = f)
+    return androidx.compose.material3.Typography(
+        displayLarge = displayLarge.c(), displayMedium = displayMedium.c(), displaySmall = displaySmall.c(),
+        headlineLarge = headlineLarge.c(), headlineMedium = headlineMedium.c(), headlineSmall = headlineSmall.c(),
+        titleLarge = titleLarge.c(), titleMedium = titleMedium.c(), titleSmall = titleSmall.c(),
+        bodyLarge = bodyLarge.c(), bodyMedium = bodyMedium.c(), bodySmall = bodySmall.c(),
+        labelLarge = labelLarge.c(), labelMedium = labelMedium.c(), labelSmall = labelSmall.c(),
+    )
+}
+
 /** M3 标准圆角档位 */
 private val YanshuShapes = Shapes(
     extraSmall = RoundedCornerShape(4.dp),
@@ -204,8 +221,12 @@ fun YanshuTheme(
             dark = scheme.background.luminance() < 0.5f,
         )
     }
+    val family = appFontFamily()
+    val typography = remember(family) {
+        androidx.compose.material3.Typography().withFamily(family)
+    }
     androidx.compose.runtime.CompositionLocalProvider(LocalAvatarPalette provides avatar) {
-        MaterialTheme(colorScheme = scheme, shapes = YanshuShapes, content = content)
+        MaterialTheme(colorScheme = scheme, shapes = YanshuShapes, typography = typography, content = content)
     }
 }
 

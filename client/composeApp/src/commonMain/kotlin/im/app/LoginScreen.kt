@@ -43,6 +43,12 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
+    // 人机验证是 DOM 节点，不随 Compose 一起销毁。
+    // 登录成功后整个登录页会被移出组合，此时必须主动把它收起来 ——
+    // 否则它会一直飘在主界面上（之前就是这样）。
+    DisposableEffect(Unit) {
+        onDispose { hideTurnstileWidget("turnstile-box") }
+    }
     var apiBase by remember { mutableStateOf(DEFAULT_API) }
     var wsBase by remember { mutableStateOf(DEFAULT_WS) }
     var username by remember { mutableStateOf("") }
