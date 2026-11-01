@@ -2,10 +2,14 @@ package im.client.api
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 
 @Serializable
 data class LoginResp(val uid: String, val token: String)
@@ -67,11 +71,12 @@ class Api(private val baseUrl: String) {
     }
 
     suspend fun createGroup(token: String, name: String, members: List<String>): String {
-        val membersJson = members.joinToString(",") { "\"$it\"" }
-        val resp = request<Map<String, String>>(
-            "POST", "/v1/conversations/group",
-            "{\"name\":\"$name\",\"members\":[$membersJson]}", token,
-        )
+        // 群名是用户输入，同样不能手拼（见 createMoment 的说明）
+        val body = buildJsonObject {
+            put("name", name)
+            put("members", buildJsonArray { members.forEach { add(JsonPrimitive(it)) } })
+        }.toString()
+        val resp = request<Map<String, String>>("POST", "/v1/conversations/group", body, token)
         return resp["id"]!!
     }
 
@@ -157,7 +162,7 @@ class Api(private val baseUrl: String) {
         request("GET", "/v1/contacts/requests", null, token)
 
     suspend fun searchByYid(token: String, yid: String): SearchUserResp =
-        request("GET", "/v1/users/search?yid=$yid", null, token)
+        request("GET", "/v1/users/search?yid=" + urlEncode(yid), null, token)
 
     suspend fun changeYid(token: String, newId: String) {
         request<Map<String, String>>("PUT", "/v1/me/yid", "{\"yid\":\"$newId\"}", token)
@@ -199,10 +204,14 @@ class Api(private val baseUrl: String) {
 
     /** 朋友圈相关 */
     suspend fun createMoment(token: String, text: String, images: List<String>): String {
-        val imgs = images.joinToString(",") { "\"$it\"" }
-        val resp = request<Map<String, String>>(
-            "POST", "/v1/moments", "{\"text\":\"$text\",\"images\":[$imgs]}", token,
-        )
+        // 以前是手拼 JSON：正文里只要有换行或引号，拼出来的就是非法 JSON，
+        // 服务端直接回 "invalid character '\n' in string literal"（用户看到的就是这句话）。
+        // 改用结构化构造，换行/引号/反斜杠都由序列化器处理。
+        val body = buildJsonObject {
+            put("text", text)
+            put("images", buildJsonArray { images.forEach { add(JsonPrimitive(it)) } })
+        }.toString()
+        val resp = request<Map<String, String>>("POST", "/v1/moments", body, token)
         return resp["id"] ?: ""
     }
 
@@ -262,7 +271,6 @@ class Api(private val baseUrl: String) {
         request("GET", "/v1/conversations/$convId/members", null, token)
 
     suspend fun addGroupMembers(token: String, convId: String, members: List<String>) {
-        val ms = members.joinToString(",") { json.encodeToString(it) }
         val body = json.encodeToString(mapOf("members" to members))
         request<Map<String, Boolean>>("POST", "/v1/conversations/$convId/members", body, token)
     }

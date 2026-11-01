@@ -206,7 +206,14 @@ fun ContactsView(client: ImClient, onOpenChat: (peerUid: String) -> Unit) {
                         text = { OutlinedTextField(remark, { remark = it }, singleLine = true) },
                         confirmButton = {
                             TextButton(onClick = {
-                                scope.launch { client.api.setRemark(client.myToken, c.uid, remark); editRemark = false; reload() }
+                                scope.launch {
+                                    client.api.setRemark(client.myToken, c.uid, remark)
+                                    editRemark = false
+                                    reload()
+                                    // 会话列表里的标题由服务端按备注重算，必须重新拉一次，
+                                    // 否则聊天页标题还是旧昵称（真实反馈：改备注不生效）
+                                    runCatching { client.refreshConversations() }
+                                }
                             }) { Text("保存") }
                         },
                         dismissButton = { TextButton(onClick = { editRemark = false }) { Text("取消") } },

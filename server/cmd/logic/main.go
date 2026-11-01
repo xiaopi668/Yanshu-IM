@@ -214,7 +214,27 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func fail(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, map[string]string{"error": err.Error()})
+	msg := err.Error()
+	// 不要把 Go 的 JSON 解析错误原样丢给用户。
+	// 例如客户端手拼 JSON 遇到换行时会得到：
+	//   invalid character '\n' in string literal
+	// 用户看不懂，也定位不到问题（这是真实发生过的）。
+	if isJSONSyntaxError(msg) {
+		msg = "请求格式不正确"
+	}
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// isJSONSyntaxError 判断是不是 encoding/json 的语法类错误
+func isJSONSyntaxError(msg string) bool {
+	switch {
+	case strings.Contains(msg, "invalid character"),
+		strings.Contains(msg, "unexpected end of JSON input"),
+		strings.Contains(msg, "cannot unmarshal"),
+		strings.Contains(msg, "json: "):
+		return true
+	}
+	return false
 }
 
 // ---------- 注册 / 登录 ----------

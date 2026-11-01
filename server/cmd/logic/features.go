@@ -129,7 +129,15 @@ func (a *apiv1) listConversations(w http.ResponseWriter, r *http.Request, uid st
 		for _, list := range members {
 			allPeers = append(allPeers, list...)
 		}
-		names, err := a.db.NicknamesOf(exclude(uniq(allPeers), uid))
+		peers := exclude(uniq(allPeers), uid)
+		names, err := a.db.NicknamesOf(peers)
+		if err != nil {
+			fail(w, 500, err)
+			return
+		}
+		// 备注优先于昵称：用户改了备注，会话列表与聊天页标题必须立刻跟着变。
+		// 之前只取 nickname，所以「改备注不生效」（真实反馈）。
+		remarks, err := a.db.RemarksOf(uid, peers)
 		if err != nil {
 			fail(w, 500, err)
 			return
@@ -144,7 +152,11 @@ func (a *apiv1) listConversations(w http.ResponseWriter, r *http.Request, uid st
 					peer = m
 				}
 			}
-			out[i].Title = names[peer]
+			if r := remarks[peer]; r != "" {
+				out[i].Title = r
+			} else {
+				out[i].Title = names[peer]
+			}
 		}
 	}
 	_ = byID

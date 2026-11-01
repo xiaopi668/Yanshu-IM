@@ -77,3 +77,38 @@ func (d *DB) NicknamesOf(uids []string) (map[string]string, error) {
 func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
+
+// RemarksOf 批量取当前用户对某些好友设置的备注（没有设置的不出现在结果里）。
+//
+// 用户反馈：通讯录里改了备注，聊天页标题不跟着变 —— 因为会话列表只取了昵称。
+// 备注是「我这边的称呼」，理应优先于对方昵称。
+func (d *DB) RemarksOf(ownerUID string, friendUIDs []string) (map[string]string, error) {
+	out := map[string]string{}
+	if ownerUID == "" || len(friendUIDs) == 0 {
+		return out, nil
+	}
+	q := fmt.Sprintf(
+		`SELECT friend_uid, remark FROM friend WHERE owner_uid=? AND friend_uid IN (%s)`,
+		placeholders(len(friendUIDs)),
+	)
+	args := make([]any, 0, len(friendUIDs)+1)
+	args = append(args, ownerUID)
+	for _, id := range friendUIDs {
+		args = append(args, id)
+	}
+	rows, err := d.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var uid, remark string
+		if err := rows.Scan(&uid, &remark); err != nil {
+			return nil, err
+		}
+		if remark != "" {
+			out[uid] = remark
+		}
+	}
+	return out, rows.Err()
+}

@@ -195,6 +195,13 @@ fun MainScreen(
     onAccentChange: (String?) -> Unit = {},
 ) {
     var selected by remember { mutableStateOf<Conversation?>(null) }
+    // 会话列表（用于把 selected 这个"快照"映射回最新数据）
+    // 改备注后服务端算出的标题会变，但 selected 里存的是旧对象 ——
+    // 直接用它渲染，聊天页标题就永远停在旧值上（真实反馈：改备注不生效）。
+    val conversations by client.conversations.collectAsState()
+    val currentConv = remember(selected, conversations) {
+        selected?.let { sel -> conversations.firstOrNull { it.id == sel.id } ?: sel }
+    }
     val state by client.connectionState.collectAsState()
     val callState by client.callController.uiState.collectAsState()
     var showNewGroupDialog by remember { mutableStateOf(false) }
@@ -288,7 +295,7 @@ fun MainScreen(
             }
         }
         VerticalDivider()
-        if (selected == null) {
+        if (currentConv == null) {
             // 原写法：Box + background(background) / Box + clip + background(primaryContainer)。
             // 现在：Surface 承载底色与形状。
             Surface(
@@ -321,7 +328,7 @@ fun MainScreen(
                 }
             }
         } else {
-            ChatScreen(client, selected!!, Modifier.weight(1f))
+            ChatScreen(client, currentConv!!, Modifier.weight(1f))
         }
     }
     // Snackbar 容器

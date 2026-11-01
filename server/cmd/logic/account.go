@@ -208,4 +208,3 @@ func (a *apiv1) resetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
-
