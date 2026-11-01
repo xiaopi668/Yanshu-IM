@@ -147,3 +147,65 @@ func (a *apiv1) reissueToken(ctx context.Context, uid string) (string, error) {
 	}
 	return auth.MakeToken(a.cfg.JWTSecret, uid, "reauth", st.TokenVersion)
 }
+
+// resetPassword 通过邮箱验证码重置密码（未登录可用）。
+//
+// 顺序很关键：先校验验证码、再查账号。验证码是发到邮箱里的，
+// 攻击者拿不到邮件就过不了这一步，也就不存在「试出哪些邮箱注册过」的问题。
+// 重置成功后递增令牌版本 —— 所有设备下线，这是重置密码应有的语义。
+func (a *apiv1) resetPassword(w http.ResponseWriter, r *http.Request) {
+	if err := a.rateLimit(r, "password-reset", a.cfg.AuthRateLimit, 5*time.Minute); err != nil {
+		fail(w, 429, err)
+		return
+	}
+	var req struct {
+		Email       string `json:"email"`
+		Code        string `json:"code"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	conf := a.siteConf()
+	if !conf.EmailCodeEnabled {
+		// 没有邮箱通道就无法证明「你是这个邮箱的主人」，只能让管理员在后台重置
+		fail(w, 403, errors.New("本站未开启邮箱验证，无法自助重置密码，请联系管理员"))
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if !emailRe.MatchString(email) {
+		fail(w, 400, errors.New("邮箱格式不正确"))
+		return
+	}
+	if len(req.NewPassword) < 6 {
+		fail(w, 400, errors.New("新密码至少 6 位"))
+		return
+	}
+	if err := siteconf.CheckEmailCode(a.rdb, email, strings.TrimSpace(req.Code)); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	nh, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	res, err := a.db.Exec(`UPDATE user SET password_hash=? WHERE email=?`, nh, email)
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		fail(w, 404, errors.New("该邮箱未绑定账号"))
+		return
+	}
+	// 重置后让所有设备下线（与改密一致）
+	var uid string
+	if err := a.db.QueryRow(`SELECT uid FROM user WHERE email=? LIMIT 1`, email).Scan(&uid); err == nil && uid != "" {
+		_ = userstate.BumpTokenVersion(r.Context(), a.db.DB, uid)
+		userstate.Invalidate(r.Context(), a.rdb, uid)
+	}
+	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
+

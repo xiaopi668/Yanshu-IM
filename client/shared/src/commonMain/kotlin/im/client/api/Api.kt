@@ -174,6 +174,17 @@ class Api(private val baseUrl: String) {
         return resp["token"] ?: ""
     }
 
+    /**
+     * 忘记密码：用邮箱验证码重置（不需要登录）。
+     * 重置成功后服务端会递增令牌版本，所有设备下线。
+     */
+    suspend fun resetPassword(email: String, code: String, newPassword: String) {
+        val body = "{\"email\":\"" + jsonEscape(email) +
+            "\",\"code\":\"" + jsonEscape(code) +
+            "\",\"new_password\":\"" + jsonEscape(newPassword) + "\"}"
+        request<Map<String, String>>("POST", "/v1/password/reset", body, null)
+    }
+
     /** 让其它设备下线；当前设备返回新令牌 */
     suspend fun logoutOtherDevices(token: String): String {
         val resp = request<Map<String, String>>("POST", "/v1/me/logout-others", "{}", token)

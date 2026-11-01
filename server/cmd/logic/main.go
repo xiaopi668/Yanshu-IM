@@ -110,6 +110,8 @@ func main() {
 	mux.Handle("POST /v1/me/password", a.authed(a.changePassword))
 	mux.Handle("POST /v1/me/logout-others", a.authed(a.logoutOtherDevices))
 	mux.Handle("PUT /v1/me/email", a.authed(a.setEmail))
+	// 忘记密码：邮箱验证码重置（未登录可用）
+	mux.HandleFunc("POST /v1/password/reset", a.resetPassword)
 	// 二期：通讯录
 	mux.Handle("POST /v1/contacts/request", a.authed(a.contactRequest))
 	mux.Handle("POST /v1/contacts/{id}/accept", a.authed(a.contactAccept))

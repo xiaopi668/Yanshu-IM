@@ -58,6 +58,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
     // 发送验证码后的冷却：服务端本身有频率限制，但界面上没有任何反馈，
     // 用户只会反复点（然后吃到 429）。这里做成 60 秒倒计时，顺带给出明确预期。
     var codeCooldown by remember { mutableStateOf(0) }
+    var showResetDialog by remember { mutableStateOf(false) }
     LaunchedEffect(codeCooldown) {
         if (codeCooldown > 0) {
             delay(1000)
@@ -299,6 +300,22 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                         shape = CircleShape,
                     ) { Text(if (busy) "登录中…" else "登录", style = MaterialTheme.typography.titleSmall) }
 
+                    // 忘记密码：站点没开邮箱服务时没有任何可自助的通道，
+                    // 直接说明「找管理员」，比给一个点了就报错的入口好
+                    if (!isRegister) {
+                        if (siteCfg?.email_code_enabled == true) {
+                            TextButton(onClick = { showResetDialog = true }) {
+                                Text("忘记密码？", style = MaterialTheme.typography.labelLarge)
+                            }
+                        } else {
+                            Text(
+                                "忘记密码请联系管理员重置（本站未开启邮箱验证）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+
                     if (isRegister && canRegister) {
                         OutlinedButton(
                             enabled = !busy && !turnstilePending && username.isNotBlank() && password.isNotBlank(),
@@ -450,6 +467,19 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
             Spacer(Modifier.height(32.dp))
     }
     }
+    // 忘记密码弹窗挂在滚动容器之外：放在卡片里会被滚动区域裁掉
+    if (showResetDialog && siteCfg?.email_code_enabled == true) {
+        ResetPasswordDialog(
+            apiBase = apiBase.trimEnd('/'),
+            turnstileToken = turnstileToken,
+            onDismiss = { showResetDialog = false },
+            onDone = {
+                showResetDialog = false
+                tip = "密码已重置，请用新密码登录"
+                error = null
+            },
+        )
+    }
 }
 
 /** 品牌标识：圆角方块 + 名称 + 一句话说明 */
@@ -570,3 +600,138 @@ private fun TurnstileSlot(token: String, renderable: Boolean, err: String? = nul
         }
     }
 }
+
+/**
+ * 忘记密码：邮箱验证码重置。
+ *
+ * 只在站点开启邮箱验证时可用 —— 没有邮件通道就无法证明「你是这个邮箱的主人」，
+ * 那种情况由登录页直接提示「联系管理员」，不给一个点了必然报错的入口。
+ */
+@Composable
+private fun ResetPasswordDialog(
+    apiBase: String,
+    turnstileToken: String,
+    onDismiss: () -> Unit,
+    onDone: () -> Unit,
+) {
+    var email by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var newPwd by remember { mutableStateOf("") }
+    var confirmPwd by remember { mutableStateOf("") }
+    var err by remember { mutableStateOf<String?>(null) }
+    var tip by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var cooldown by remember { mutableStateOf(0) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(cooldown) {
+        if (cooldown > 0) {
+            delay(1000)
+            cooldown -= 1
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("重置密码") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    email, { email = it },
+                    label = { Text("账号绑定的邮箱") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        code, { code = it },
+                        label = { Text("验证码") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        enabled = email.contains("@") && !busy && cooldown == 0,
+                        onClick = {
+                            busy = true
+                            scope.launch {
+                                try {
+                                    val ok = apiSendEmailCode(apiBase, email.trim(), turnstileToken)
+                                    if (ok) {
+                                        tip = "验证码已发送（5 分钟内有效）"
+                                        err = null
+                                        cooldown = 60
+                                    }
+                                } catch (e: Throwable) {
+                                    err = e.message ?: e.toString()
+                                } finally {
+                                    busy = false
+                                }
+                            }
+                        },
+                    ) { Text(if (cooldown > 0) cooldown.toString() + " 秒" else "发送") }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    newPwd, { newPwd = it },
+                    label = { Text("新密码（至少 6 位）") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    confirmPwd, { confirmPwd = it },
+                    label = { Text("确认新密码") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "重置成功后，所有设备上的登录都会失效",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                tip?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                }
+                err?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy,
+                onClick = {
+                    err = when {
+                        !email.contains("@") -> "请填写邮箱"
+                        code.isBlank() -> "请填写验证码"
+                        newPwd.length < 6 -> "新密码至少 6 位"
+                        newPwd != confirmPwd -> "两次输入的新密码不一致"
+                        else -> null
+                    }
+                    if (err != null) return@TextButton
+                    busy = true
+                    scope.launch {
+                        try {
+                            val api = im.client.api.Api(apiBase)
+                            api.resetPassword(email.trim(), code.trim(), newPwd)
+                            onDone()
+                        } catch (e: Throwable) {
+                            err = e.message ?: e.toString()
+                        } finally {
+                            busy = false
+                        }
+                    }
+                },
+            ) { Text(if (busy) "提交中…" else "重置") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") } },
+    )
+}
+
