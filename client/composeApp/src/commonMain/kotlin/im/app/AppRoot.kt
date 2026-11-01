@@ -14,6 +14,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
@@ -697,10 +705,34 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
                 }
                 Spacer(Modifier.width(4.dp))
                 // M3 filled TextField + pill 形状（Material You 的聊天输入框就是这样）
+                // 发送动作抽出来，回车与按钮走同一条路径
+                val doSend = {
+                    if (input.isNotBlank()) {
+                        val text = input
+                        input = ""
+                        scope.launch { client.sendMessage(conversation.id, text) }
+                    }
+                    Unit
+                }
                 TextField(
                     input, { input = it },
-                    placeholder = { Text("输入消息…") },
-                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("输入消息…（Enter 发送，Ctrl+Enter 换行）") },
+                    modifier = Modifier.weight(1f)
+                        // 键盘习惯：Enter 发送、Ctrl/Shift/Meta+Enter 换行。
+                        // 用 onPreviewKeyEvent 在 TextField 处理之前拦下来，
+                        // 否则回车会先被插入成换行；返回 true 表示事件已被消费。
+                        .onPreviewKeyEvent { e ->
+                            if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            val isEnter = e.key == Key.Enter || e.key == Key.NumPadEnter
+                            if (!isEnter) return@onPreviewKeyEvent false
+                            if (e.isCtrlPressed || e.isShiftPressed || e.isMetaPressed) {
+                                input += "\n"
+                                true
+                            } else {
+                                doSend()
+                                true
+                            }
+                        },
                     maxLines = 4,
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = TextFieldDefaults.colors(
@@ -712,11 +744,7 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
                 Spacer(Modifier.width(8.dp))
                 // M3 的 FilledIconButton：圆形填充按钮
                 FilledIconButton(
-                    onClick = {
-                        val text = input
-                        input = ""
-                        scope.launch { client.sendMessage(conversation.id, text) }
-                    },
+                    onClick = { doSend() },
                     enabled = input.isNotBlank(),
                     modifier = Modifier.size(44.dp),
                 ) { Text("➤", style = MaterialTheme.typography.titleMedium) }
