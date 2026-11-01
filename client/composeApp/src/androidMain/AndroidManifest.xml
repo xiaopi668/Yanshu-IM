@@ -1,6 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- ===== 通话（语音）所需权限 ===== -->
+    <!-- 麦克风采集：运行时权限，由 CallPermissions 在点「接听/呼叫」后申请 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 切 MODE_IN_COMMUNICATION / 听筒 / 免提（CallAudioRouter） -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- 通话前台服务：Android 12+ 没有它，切后台麦克风会被系统回收（CallService） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14(API 34) 起前台服务必须按类型申报，microphone 类型要用这条 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Android 13+ 的「正在通话」通知条；拒绝也照样能通话，只是看不到通知、无法从通知栏挂断 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 说明：这里**故意不申请** BLUETOOTH_CONNECT。
+         LiveKit 内部的 audioswitch 会枚举蓝牙设备，而它在未授权时会直接抛异常，
+         反而把整通电话打挂；蓝牙路由留到后续阶段（届时需要在申请 + 失败降级两处都补齐）。 -->
+
+    <!-- io.livekit:livekit-android 的 AAR 清单会带进这两条权限（视频/屏幕共享用）。
+         本项目只做语音（AGENT.md §1），不申请摄像头、不做屏幕共享 —— 留着会让应用详情页
+         显示「相机」权限，既误导用户也过不了部分渠道的审核。用 tools:node="remove" 摘掉，
+         运行时不会调用这两条链路（setCameraEnabled / createScreencastTrack 均未使用）。 -->
+    <uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" tools:node="remove" />
+
     <application
         android:label="雁书"
         android:icon="@mipmap/ic_launcher"
@@ -25,5 +49,23 @@
                 <data android:scheme="yanshu" android:host="oidc" />
             </intent-filter>
         </activity>
+
+        <!-- 通话前台服务：foregroundServiceType=microphone 必须与
+             startForeground(..., FOREGROUND_SERVICE_TYPE_MICROPHONE) 一致，否则 API 34 直接抛 SecurityException。
+             exported=false：只允许本应用启动；stopWithTask=false：
+             用户从最近任务里划掉 App 时不连带停止服务（否则通话会被一起掐断）。 -->
+        <service
+            android:name="im.client.call.CallService"
+            android:foregroundServiceType="microphone"
+            android:exported="false"
+            android:stopWithTask="false" />
+
+        <!-- 同一来源（io.livekit:livekit-android）的屏幕共享前台服务一并摘掉：
+             语音通话不会调用 createScreencastTrack / setScreenShareEnabled，
+             留着它只会在清单里躺一个 foregroundServiceType=mediaProjection 的服务组件，
+             与上面摘掉的那条权限自相矛盾。将来做阶段 6（视频/共享）时删掉这一处即可。 -->
+        <service
+            android:name="io.livekit.android.room.track.screencapture.ScreenCaptureService"
+            tools:node="remove" />
     </application>
 </manifest>
