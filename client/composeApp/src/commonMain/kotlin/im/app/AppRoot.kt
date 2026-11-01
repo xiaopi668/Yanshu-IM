@@ -26,15 +26,20 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import im.client.CallMediaState
 import im.client.ImClient
 import im.client.auth.SavedSession
 import im.client.auth.clearSession
 import im.client.auth.loadSession
 import im.client.auth.oidcTokenFromLaunch
 import im.client.auth.saveSession
+import im.client.call.CallActions
+import im.client.call.CallMediaExtras
+import im.client.currentTimeMillis
 import im.client.net.ConnState
 import im.client.proto.Msg
 import im.client.proto.MsgType
@@ -214,6 +219,37 @@ fun MainScreen(
     }
     val state by client.connectionState.collectAsState()
     val callState by client.callController.uiState.collectAsState()
+
+    // 系统通知栏的「挂断」按钮（AGENT.md 阶段 3）拿不到 CallController，也不该持有 Activity：
+    // 界面层把动作登记进 CallActions，Service 侧只调 requestHangUp()。
+    // key 用 client —— 退出登录/切号时会先 dispose 再重新登记，否则通知栏会调到一个
+    // 已经 stop() 的客户端（点了没反应，麦克风却还开着）。
+    // 这段只在登录后组合（MainScreen 就是 AppRoot 里 client != null 的那条分支）。
+    DisposableEffect(client) {
+        CallActions.hangUp = { client.callController.hangUp() }
+        onDispose { CallActions.hangUp = null }
+    }
+    LaunchedEffect(callState.peerUid) {
+        CallActions.peerLabel = callState.peerUid.takeLast(8)
+    }
+
+    // 通话时长从「媒体真的接通」起算，而不是从信令 InCall 起算 —— 信令通了不等于有声音
+    // （AGENT.md §6.1，Web 端第一版就栽在这里）。
+    // 起点放在 remember(callId) 里：换一通电话、或挂断回到 Idle（callId 变空）都会归零；
+    // media 离开 Connected 时下面这个 tick 循环随即取消，不会在后台空转。
+    var callStartedAtMs by remember(callState.callId) { mutableStateOf(0L) }
+    var callDurationSec by remember(callState.callId) { mutableStateOf(0L) }
+    LaunchedEffect(callState.callId, callState.media) {
+        if (callState.media != CallMediaState.Connected) return@LaunchedEffect
+        // 重连导致 Connected 重新出现时沿用同一个起点，时长不会跳回去
+        val startedAt = callStartedAtMs.takeIf { it > 0L }
+            ?: currentTimeMillis().also { callStartedAtMs = it }
+        while (true) {
+            callDurationSec = ((currentTimeMillis() - startedAt) / 1000).coerceAtLeast(0L)
+            delay(1_000)
+        }
+    }
+
     var showNewGroupDialog by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf("chat") }
     var showProfile by remember { mutableStateOf(false) }
@@ -362,6 +398,7 @@ fun MainScreen(
             media = callState.media,
             error = callState.mediaError,
             muted = callState.muted,
+            durationSec = callDurationSec,
             onToggleMute = { client.callController.toggleMute() },
             onHangUp = { client.callController.hangUp() },
         )
@@ -422,25 +459,46 @@ fun CallingOverlay(peer: String, onCancel: () -> Unit) {
  *
  * 之前这里是三行占位文字（"媒体由平台 WebRTC 承载"），实际上没有任何声音通道 ——
  * 用户看到"通话中"却听不到对方。现在按媒体面的真实状态显示，并提供静音/挂断。
+ *
+ * 三端共用这一份 UI，所以「免提 / 正在重连 / 去设置」这些只有 Android 才有真实实现的
+ * 能力统一走 [CallMediaExtras] 这层 expect/actual：Web 与桌面拿到的是常量 false，
+ * 对应控件自然不渲染；不能在 commonMain 里写 `if (isAndroid)`（KMP 没有这种开关），
+ * 也不能把 AudioManager / Activity 这类 Android 专有 API 泄进共用代码。
+ *
+ * @param durationSec 已接通时长（秒）。由调用方从「媒体 Connected」时刻起计，
+ *   状态机本身不加字段 —— 计时是表现层的事，混进 [im.client.CallUiState] 会让
+ *   状态机语义（信令 + 媒体）变糊。
  */
 @Composable
 fun InCallOverlay(
     peer: String,
-    media: im.client.CallMediaState,
+    media: CallMediaState,
     error: String,
     muted: Boolean,
+    durationSec: Long,
     onToggleMute: () -> Unit,
     onHangUp: () -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
+    // 三项里只有 Android 会真的变化；Web/桌面是常量（见各端 actual）
+    val speakerOn by CallMediaExtras.speakerOn.collectAsState()
+    val reconnecting by CallMediaExtras.reconnecting.collectAsState()
+    val micPermissionBlocked by CallMediaExtras.micPermissionBlocked.collectAsState()
+    // 「去设置」能不能用只有点下去才知道（openAppSettings() 拿不到宿主 Context 时返回 false）。
+    // 组合期不能试调 —— 试调成功就真的跳转到设置页了。所以先按状态渲染，失败一次就隐藏，
+    // 免得留下一个点了没反应的按钮。
+    var settingsUnavailable by remember(peer, media) { mutableStateOf(false) }
+
     val (status, statusColor) = when (media) {
-        im.client.CallMediaState.Connecting -> "正在接入语音…（如弹出麦克风授权请允许）" to scheme.inverseOnSurface
+        // 网络切换（WiFi→4G）时 LiveKit 自己重连；此时还没接上，区别只在文案
+        CallMediaState.Connecting ->
+            (if (reconnecting) "正在重连…" else "正在接入语音…（如弹出麦克风授权请允许）") to scheme.inverseOnSurface
         // 注意括号：if 的优先级低于 to，不加括号会变成 if (a) x else (y to c)
-        im.client.CallMediaState.Connected ->
+        CallMediaState.Connected ->
             (if (muted) "已静音（对方听不到你）" else "已接通") to scheme.primary
-        im.client.CallMediaState.Failed -> (error.ifBlank { "媒体接入失败" }) to scheme.error
-        im.client.CallMediaState.Unsupported -> (error.ifBlank { "该平台暂不支持通话" }) to scheme.error
-        im.client.CallMediaState.None -> "准备中…" to scheme.inverseOnSurface
+        CallMediaState.Failed -> (error.ifBlank { "媒体接入失败" }) to scheme.error
+        CallMediaState.Unsupported -> (error.ifBlank { "该平台暂不支持通话" }) to scheme.error
+        CallMediaState.None -> "准备中…" to scheme.inverseOnSurface
     }
 
     Surface(
@@ -457,17 +515,52 @@ fun InCallOverlay(
                 Spacer(Modifier.height(8.dp))
                 Text(status, style = MaterialTheme.typography.bodySmall, color = statusColor)
 
-                if (media == im.client.CallMediaState.Connecting) {
+                // 时长只在接通后才有意义；等宽字体是为了秒数跳动时数字不左右抖
+                if (media == CallMediaState.Connected || durationSec > 0L) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        formatCallDuration(durationSec),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontFamily = FontFamily.Monospace,
+                        color = scheme.inverseOnSurface,
+                    )
+                }
+
+                // 阶段 5：权限被拒是唯一「用户自己能修」的失败，给一条出路；
+                // 其它失败（token 过期 / 地址不可达）没有可操作项，只显示原因。
+                if (media == CallMediaState.Failed && micPermissionBlocked && !settingsUnavailable) {
+                    Spacer(Modifier.height(16.dp))
+                    FilledTonalButton(onClick = {
+                        if (!CallMediaExtras.openAppSettings()) settingsUnavailable = true
+                    }) { Text("去设置") }
+                }
+
+                if (media == CallMediaState.Connecting) {
                     Spacer(Modifier.height(16.dp))
                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                 }
 
                 Spacer(Modifier.height(24.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // 免提：只有该平台真的能切音频路由时才出现（Web 由浏览器决定，桌面没有媒体面）
+                    if (CallMediaExtras.speakerSupported) {
+                        FilledTonalButton(
+                            onClick = { CallMediaExtras.toggleSpeaker() },
+                            // 没接通时切路由没有意义，也避免和入会时的默认路由打架
+                            enabled = media == CallMediaState.Connected,
+                        ) {
+                            // 文案是「点了会切到哪儿」，不是「现在在哪儿」——
+                            // 和系统电话里的免提键一致，免得用户以为它是个状态指示
+                            Text(if (speakerOn) "听筒" else "免提")
+                        }
+                    }
                     // 静音只在真正接通后有意义
                     FilledTonalButton(
                         onClick = onToggleMute,
-                        enabled = media == im.client.CallMediaState.Connected,
+                        enabled = media == CallMediaState.Connected,
                     ) {
                         Text(if (muted) "取消静音" else "静音")
                     }
@@ -479,6 +572,21 @@ fun InCallOverlay(
             }
         }
     }
+}
+
+/**
+ * 通话时长文案：不足 1 小时 `mm:ss`，超过 1 小时 `h:mm:ss`（和微信/系统电话一致）。
+ *
+ * 手写补齐而不是 String.format —— wasm 目标没有 java.util.Formatter，
+ * 本文件已经因为同类问题（formatSize）踩过一次。
+ */
+internal fun formatCallDuration(totalSeconds: Long): String {
+    val s = totalSeconds.coerceAtLeast(0L)
+    val hours = s / 3600
+    val minutes = (s % 3600) / 60
+    val seconds = s % 60
+    fun two(v: Long): String = if (v < 10) "0$v" else v.toString()
+    return if (hours > 0) "$hours:${two(minutes)}:${two(seconds)}" else "${two(minutes)}:${two(seconds)}"
 }
 
 @Composable

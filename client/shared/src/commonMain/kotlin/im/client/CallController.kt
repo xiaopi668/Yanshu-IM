@@ -164,7 +164,7 @@ class CallController(
         scope.launch { runCatching { media.leave() } }
     }
 
-    private suspend fun handleSignal(sig: CallSignalData) {
+    internal suspend fun handleSignal(sig: CallSignalData) {
         when (sig.event) {
             CallEventType.Invite -> {
                 // 被叫：响铃
@@ -209,7 +209,14 @@ class CallController(
                 scope.launch {
                     val r = media.join(livekitUrl, sig.livekitToken)
                     val cur = _state.value
-                    if (cur.state != CallState.InCall) return@launch  // 期间已挂断
+                    if (cur.state != CallState.InCall) {
+                        // 期间已挂断（本机挂断 / 对端 Hangup / 通知栏挂断 / 媒体自身请求收尾）：
+                        // 结果丢弃，但**这一轮已经连上来的房间与麦克风要显式收掉**。
+                        // 只靠挂断那次 leave() 挡不住它：leave 先到时 Android 侧只能置「已请求离开」，
+                        // 若 join 在其后进入（或刚好跨过复位点），麦克风会一直开着直到下一轮信令。
+                        runCatching { media.leave() }
+                        return@launch
+                    }
                     _state.value = cur.copy(
                         media = if (r.isSuccess) CallMediaState.Connected else CallMediaState.Failed,
                         mediaError = r.exceptionOrNull()?.message ?: "",
