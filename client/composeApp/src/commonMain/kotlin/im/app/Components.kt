@@ -85,9 +85,9 @@ fun StatusPill(state: ConnState, modifier: Modifier = Modifier) {
 /**
  * 顶层切换（聊天 / 通讯录 / 朋友圈）。
  *
- * 用 M3 的 PrimaryTabRow + Tab：选中态由「滑块指示器」表达，这是 Material 3 的标志性控件。
- * 之前是自己画的一条底 + 一个白色方块 —— 看着像，但拿不到 M3 的指示器动画、
- * 无障碍语义、以及 RTL/尺寸适配。
+ * 用 M3 的 SingleChoiceSegmentedButtonRow + SegmentedButton（药丸形连体按钮组）。
+ * 原写法是自绘「一条底 + 选中方块」：看着像，但拿不到涟漪、指示器动画与无障碍语义，
+ * 未选中段还会出现整块方角 hover 底色。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
