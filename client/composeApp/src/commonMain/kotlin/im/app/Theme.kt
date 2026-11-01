@@ -10,6 +10,9 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -221,12 +224,26 @@ fun YanshuTheme(
             dark = scheme.background.luminance() < 0.5f,
         )
     }
-    val family = appFontFamily()
-    val typography = remember(family) {
-        androidx.compose.material3.Typography().withFamily(family)
-    }
-    androidx.compose.runtime.CompositionLocalProvider(LocalAvatarPalette provides avatar) {
-        MaterialTheme(colorScheme = scheme, shapes = YanshuShapes, typography = typography, content = content)
+    when (val fontState = appFontState()) {
+        // Web 端字体还没就绪：先只铺底色。
+        // 这一步很关键 —— 如果此时就画文字，Compose 会按「缺字形」渲染成方框并缓存排版，
+        // 之后字体到了也不会自动重排（用户看到的现象：鼠标移上去才变正常）。
+        AppFontState.Loading -> Surface(Modifier.fillMaxSize(), color = scheme.background) {}
+
+        is AppFontState.Ready -> {
+            val family = fontState.family
+            val typography = remember(family) {
+                androidx.compose.material3.Typography().withFamily(family)
+            }
+            androidx.compose.runtime.CompositionLocalProvider(LocalAvatarPalette provides avatar) {
+                MaterialTheme(
+                    colorScheme = scheme,
+                    shapes = YanshuShapes,
+                    typography = typography,
+                    content = content,
+                )
+            }
+        }
     }
 }
 

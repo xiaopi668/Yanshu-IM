@@ -30,7 +30,9 @@ actual fun registerTurnstileErrorCallback(onError: (String) -> Unit) {
 private external fun jsRenderTurnstile(siteKey: String, containerId: String): Boolean
 
 /** 位置与尺寸由 Compose 布局给出（窗口坐标系、CSS 像素）：精确落在「人机验证」那一格上，不再是浮层 */
-@JsFun("(containerId, left, top, width, height) => { const el = document.getElementById(containerId); if (!el) return false; el.style.cssText = 'position:fixed;left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;display:flex;align-items:center;justify-content:center;z-index:5;'; return true; }")
+// 兜底：如果算出来的位置跑出视口（坐标换算出错、布局尚未稳定等），
+// 就退回到「底部居中」——保证小组件永远可见、且不会盖住登录卡片。
+@JsFun("(containerId, left, top, width, height) => { const el = document.getElementById(containerId); if (!el) return false; let L = left, T = top, W = width, H = height; if (L < 0 || T < 0 || L + W > innerWidth + 1 || T + H > innerHeight + 1) { W = Math.min(W, innerWidth - 16); H = Math.min(H, innerHeight - 16); L = Math.max(0, (innerWidth - W) / 2); T = Math.max(0, innerHeight - H - 16); } el.style.cssText = 'position:fixed;left:' + L + 'px;top:' + T + 'px;width:' + W + 'px;height:' + H + 'px;display:flex;align-items:center;justify-content:center;z-index:5;'; return true; }")
 private external fun jsPlaceTurnstile(containerId: String, left: Int, top: Int, width: Int, height: Int): Boolean
 
 @JsFun("(containerId) => { const el = document.getElementById(containerId); if (el) el.style.display = 'none'; }")
