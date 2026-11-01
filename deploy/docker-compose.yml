@@ -148,6 +148,10 @@ services:
       IM_STORAGE_SECRET_KEY: ${IM_MINIO_ROOT_PASSWORD:?}
       IM_STORAGE_BUCKET: im-attachments
       IM_STORAGE_PATH_STYLE: "true"
+      # 通话媒体面地址：客户端拿它连 LiveKit（/v1/site-config 的 livekit_url）。
+      # 站点是 HTTPS 时必须填 wss://，否则浏览器按混合内容直接拦掉；
+      # 缺省值与 config.go 的默认值一致，等于「未配置」，客户端会提示通话不可用。
+      IM_LIVEKIT_HOST: ${IM_LIVEKIT_HOST:-ws://127.0.0.1:7880}
       # 多副本部署时必须给每个实例设置不同的 IM_NODE_ID，否则雪花 ID 会碰撞
       IM_NODE_ID: ${IM_LOGIC_NODE_ID:-2}
     ports:
