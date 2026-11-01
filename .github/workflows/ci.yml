@@ -136,9 +136,12 @@ jobs:
         # 构建脚本才会启用 androidTarget（见 gradle.properties 里的 AGP 兼容开关）；
         # client / e2e 两个 job 则相反，会显式 unset 它，只验证 desktop
         run: ./gradlew --no-daemon :composeApp:assembleDebug
+      - name: 列出 APK 产物（确认 ABI 拆分生效）
+        run: ls -la client/composeApp/build/outputs/apk/debug/*.apk
       - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:
+          # splits.abi 会产出 5 个包（4 个 ABI + universal），这里一并上传
           name: composeApp-debug-apk
           path: client/composeApp/build/outputs/apk/debug/*.apk
           if-no-files-found: error

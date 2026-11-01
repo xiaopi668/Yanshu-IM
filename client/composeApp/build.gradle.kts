@@ -170,8 +170,35 @@ if (hasAndroidSdk) {
             targetSdk = 37
             versionCode = appVersionCode
             versionName = appVersionName
+            // 从源头过滤原生库：splits.abi.include 只约束「拆分包」，全量包仍会把依赖里
+            // 所有 ABI 打进来（实测 mips/mips64/armeabi 各 0.1MB 仍在）。
+            // mips 早被 Android 废弃、armeabi 已被 armeabi-v7a 取代，留着纯属噪音。
+            ndk {
+                abiFilters += setOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            }
         }
         packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+
+        // 按 ABI 拆包，同时保留一个全量包。
+        //
+        // 为什么必须拆：通话媒体面（io.livekit:livekit-android）会带进 4 个 ABI 的
+        // WebRTC 原生库（liblkjingle_peerconnection_so.so 每个 7–15MB）。
+        // 不拆的话一个 APK 70MB，而每台设备其实只用得上其中一个 ABI。
+        //
+        // 为什么保留全量包（isUniversalApk = true）：
+        //   - 内部分发/侧载时不用先问「你手机是什么架构」；
+        //   - CI 的 e2e 与人工验收只用这一个包，省得挑。
+        //
+        // 注意：mips / mips64 早已被 Android 废弃（NDK 早已移除），这里不 include，
+        // 它们本是 livekit AAR 带进来的死重量。
+        splits {
+            abi {
+                isEnable = true
+                reset()
+                include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+                isUniversalApk = true
+            }
+        }
     }
 }
 

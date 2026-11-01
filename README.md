@@ -159,6 +159,21 @@ cd client
 
 CI 的 `android` job 会自动装好这些，并把 APK 作为 artifact 上传。
 
+### APK 产物（按 ABI 拆分 + 全量包）
+
+通话媒体面（`io.livekit:livekit-android`）会带进四个 ABI 的 WebRTC 原生库，
+每个 7–15MB。因此 `:composeApp:assembleDebug` 现在产出 **5 个包**：
+
+| 产物 | 大小（debug） | 用途 |
+|---|---|---|
+| `composeApp-arm64-v8a-debug.apk` | ~31 MB | **绝大多数手机装这个** |
+| `composeApp-armeabi-v7a-debug.apk` | ~25 MB | 老 32 位设备 |
+| `composeApp-x86_64-debug.apk` | ~35 MB | 模拟器 |
+| `composeApp-x86-debug.apk` | ~30 MB | 老模拟器 |
+| `composeApp-universal-debug.apk` | ~69 MB | 全量包：不用问架构，侧载/内部分发用 |
+
+mips / mips64 / armeabi 已废弃，由 `ndk.abiFilters` 从源头过滤（否则全量包里仍会带上）。
+
 ### 构建期配置：默认服务器地址 / 隐藏地址输入
 
 私有化部署时可以把服务端地址**固化进客户端**，登录页不再暴露「服务器地址」入口：
