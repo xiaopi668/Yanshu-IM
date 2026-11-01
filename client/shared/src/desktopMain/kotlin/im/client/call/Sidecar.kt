@@ -94,7 +94,10 @@ internal class SidecarSession private constructor(
 ) : AutoCloseable {
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val events = MutableSharedFlow<SidecarEvent>(extraBufferCapacity = 64)
+    // replay=16：ready / state 可能在订阅之前就到达（进程启动比协程订阅快），
+    // replay=0 时这些事件会被直接丢掉 —— 表现是「侧车日志显示 ready，JVM 却在等超时」。
+    // 每个 SidecarSession 对应一次通话（独立进程），因此重放旧事件不会串到下一通电话。
+    private val events = MutableSharedFlow<SidecarEvent>(replay = 16, extraBufferCapacity = 64)
 
     /** 进程意外退出时回调（JVM 侧据此把 UI 置为失败，而不是永远显示「已接通」） */
     var onBroken: ((String) -> Unit)? = null
