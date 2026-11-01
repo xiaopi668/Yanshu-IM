@@ -393,6 +393,11 @@ func (a *apiv1) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	target := fmt.Sprintf("%s?client_id=%s&redirect_uri=%s&response_type=code&scope=%s&state=%s",
 		d.AuthorizeURL, urlQ(provider.ClientID), urlQ(redirectURI), urlQ("openid profile email"), urlQ(state))
+	// 指定了上游连接器就直接跳过去（dex 这类聚合 IdP 支持 &connector_id=xxx），
+	// 省掉「先选 GitHub 再选 Google」的中间页。
+	if provider.ConnectorID != "" {
+		target += "&connector_id=" + urlQ(provider.ConnectorID)
+	}
 	http.Redirect(w, r, target, http.StatusFound)
 }
 

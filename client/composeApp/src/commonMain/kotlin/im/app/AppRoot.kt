@@ -73,6 +73,7 @@ fun AppRoot() {
                     try {
                         val c = ImClient(DEFAULT_API.trimEnd('/'), DEFAULT_WS)
                         c.wireCallbacks()
+                        applySiteConfig(c)
                         c.loginWithToken(oidcToken)
                         c.startSession()
                         saveSession(SavedSession(c.myToken, c.apiBaseUrl, c.gatewayWsUrl))
@@ -88,6 +89,7 @@ fun AppRoot() {
                     try {
                         val c = ImClient(saved.apiBase, saved.wsBase)
                         c.wireCallbacks()
+                        applySiteConfig(c)
                         c.loginWithToken(saved.token)
                         c.startSession()
                         client = c
@@ -693,7 +695,10 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
             ) {
                 IconButton(
                     onClick = {
-                        scope.launch {
+                        // UNDISPATCHED：协程体在点击事件的同一个调用栈里立即执行，
+                        // 否则 input.click() 落到下一个调度周期，浏览器判定不是用户手势、
+                        // 直接忽略 —— 表现就是「点📎没反应、附件传不上去」。
+                        scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
                             val file = pickFile() ?: return@launch
                             try {
                                 client.sendAttachment(conversation.id, file)
@@ -887,3 +892,18 @@ private fun formatSize(bytes: Long): String {
 
 
 private fun timeOf(ms: Long): String = im.client.formatChatTime(ms)
+
+/**
+ * 拉一次站点配置，把通话地址注入客户端。
+ *
+ * 之前只有登录页（密码登录 / 注册 / OIDC 手工粘贴）会给 callController.livekitUrl 赋值，
+ * 而「OIDC 自动回调」和「本地会话恢复」这两条路径根本不经过登录页 ——
+ * 结果老用户（有本地 token）一进站就永远提示「服务端未配置通话地址（livekit_url）」，
+ * 哪怕服务端 /v1/site-config 里明明配了 wss://。
+ *
+ * 拉取失败（离线 / 服务端异常）时静默跳过：通话不可用，但不该阻断登录。
+ */
+private suspend fun applySiteConfig(c: ImClient) {
+    val url = runCatching { apiSiteConfig(c.apiBaseUrl).livekit_url }.getOrNull()
+    if (!url.isNullOrBlank()) c.callController.livekitUrl = url
+}

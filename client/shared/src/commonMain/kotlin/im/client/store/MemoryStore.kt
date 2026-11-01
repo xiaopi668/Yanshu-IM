@@ -46,7 +46,6 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
                 // 保留行不是会话，只用来识别缓存归属账号
                 if (c.id == OWNER_ROW) { cacheOwnerUid = c.title; return@forEach }
                 _conversations.value = _conversations.value + Conversation(c.id, c.type, c.title, c.last_seq, c.read_seq)
-                _maxSeqs.value = _maxSeqs.value + (c.id to c.last_seq)
                 // SQL 是 seq DESC 取最新 50 条，这里翻回升序供 UI 直接渲染
                 val recent = database.imQueries.loadRecent(c.id, 50).executeAsList().asReversed()
                 if (recent.isNotEmpty()) {
@@ -66,6 +65,11 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
                         )
                     })
                 }
+                // maxSeqs 只表示「本地真正收到的最大 seq」。
+                // 之前这里是按会话的 last_seq 顶上去的，于是 loadHistory 算出
+                // localMax == last_seq，pull(afterSeq=last_seq) 永远返回空 ——
+                // 刷新后聊天记录整段空白（服务端搜索却搜得到）就是这么来的。
+                if (recent.isNotEmpty()) bumpMaxSeq(c.id, recent.maxOf { it.seq })
             }
         }
     }
@@ -93,9 +97,10 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
         _conversations.value = list.sortedWith(
             compareByDescending<Conversation> { it.lastSeq }.thenBy { it.id }
         )
-        val newMax = _maxSeqs.value.toMutableMap()
-        list.forEach { if ((newMax[it.id] ?: 0) < it.lastSeq) newMax[it.id] = it.lastSeq }
-        _maxSeqs.value = newMax
+        // 注意：这里**不能**把 maxSeqs 顶到 lastSeq。
+        // maxSeqs 是「本地已收到的最大 seq」这个游标，refreshConversations 与 loadHistory
+        // 都拿它当 pull 的 afterSeq。一旦用服务端的 last_seq 顶替，游标直接跳到末尾，
+        // pull 永远返回 0 条，刷新页面后聊天记录就整段消失。
     }
 
     fun upsertMessage(msg: Msg) {
@@ -204,10 +209,6 @@ class MemoryStore(private val db: im.client.db.ImDatabase? = null) {
         if ((cur[cid] ?: 0) < seq) _maxSeqs.value = cur + (cid to seq)
     }
 
-    fun setMaxSeqs(m: Map<String, Long>) {
-        val cur = _maxSeqs.value
-        _maxSeqs.value = m.entries.associate { it.key to maxOf(it.value, cur[it.key] ?: 0) }
-    }
 
     private fun updateConversation(cid: String, transform: (Conversation) -> Conversation) {
         _conversations.value = _conversations.value.map {
