@@ -29,6 +29,15 @@ interface MediaSession {
 
     /** 离开房间并释放麦克风 */
     suspend fun leave()
+
+    /**
+     * 注册「媒体层异常」回调（可选）。
+     *
+     * 为什么需要：join 成功只代表当时连上了。运行中媒体进程崩溃、网络彻底断开时，
+     * 界面若还显示「已接通」，用户就对着无声通话发呆 —— 正是本项目反复踩过的
+     * 「静默失败」。默认空实现，只有能检测到异常的那一端（桌面侧车）覆盖它。
+     */
+    fun setOnBroken(callback: (String) -> Unit) {}
 }
 
 expect fun createMediaSession(): MediaSession

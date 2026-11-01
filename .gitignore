@@ -12,3 +12,6 @@ client/.gradle
 # 部署密钥（compose 强制必填，误提交等于泄露生产凭据）
 deploy/.env
 .env
+
+# Rust 侧车构建产物（含 libwebrtc，几百 MB）
+desktop-call/target/

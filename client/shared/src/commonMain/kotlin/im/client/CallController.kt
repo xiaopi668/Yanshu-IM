@@ -68,6 +68,17 @@ class CallController(
     private var pollJob: Job? = null
 
     init {
+        // 媒体层在通话中途坏掉（侧车崩溃 / 网络彻底断）：如实置为失败，
+        // 不要停在「已接通」让人对着无声界面。
+        media.setOnBroken { reason ->
+            val cur = _state.value
+            if (cur.state == CallState.InCall) {
+                _state.value = cur.copy(
+                    media = CallMediaState.Failed,
+                    mediaError = reason.ifBlank { "通话媒体层已断开" },
+                )
+            }
+        }
         connection.callSignals.onEach { sig: im.client.proto.CallSignalData -> scope.launch { handleSignal(sig) } }.launchIn(scope)
         // 响铃超时轮询（服务端 60s 清理，客户端也本地计时）
         pollJob = scope.launch {

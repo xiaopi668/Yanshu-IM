@@ -366,6 +366,15 @@ Box(Modifier.size(160.dp, 120.dp).clip(MaterialTheme.shapes.medium)) {
 | site-config（livekit_url） | `server/cmd/logic/auth_flow.go` 的 `publicSiteConfig` |
 | 部署 | `deploy/docker-compose.yml`、`deploy/livekit.yaml`、`deploy/.env.example` |
 
+**桌面端（已实现，语音）**：
+
+| 作用 | 路径 |
+|---|---|
+| 侧车（Rust + livekit 0.10） | `desktop-call/`（协议、stub/真实后端、构建说明见其 README） |
+| JVM 侧进程封装 | `client/shared/src/desktopMain/kotlin/im/client/call/Sidecar.kt` |
+| 桌面 `MediaSession` 实现 | `client/shared/src/desktopMain/kotlin/im/client/call/MediaSession.kt` |
+| 媒体异常上报 | `MediaSession.setOnBroken(...)`（`CallController` 会置为 Failed） |
+
 外部参考：LiveKit Android SDK 文档（`io.livekit:livekit-android`）——请以当前版本为准，
 本仓库不锁定其版本，接入时在 `shared/build.gradle.kts` 的 `androidMain` 中声明。
 

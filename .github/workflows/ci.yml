@@ -156,6 +156,27 @@ jobs:
 
   # 端到端：真起 MySQL/Redis/MinIO + 三进程，跑客户端的 5 个 E2E 用例。
   # 这一层是本地验证过、但此前完全没有自动化的部分（协议、投递、封禁、撤销都靠它兜底）。
+  # 桌面端通话侧车：只构建 stub（不含 libwebrtc），验证协议与状态机不腐烂。
+  # 真实媒体需要 --features livekit（cmake + 数百 MB libwebrtc），不在 CI 里跑。
+  rust-sidecar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: 构建与单元测试
+        working-directory: desktop-call
+        run: |
+          cargo build --release
+          cargo test
+      - name: 协议冒烟（真实进程，stdout 只能有协议）
+        working-directory: desktop-call
+        run: |
+          out=$(printf '{"cmd":"selftest"}\n' | ./target/release/yanshu-call-agent 2>/dev/null)
+          echo "$out"
+          echo "$out" | grep -q '"evt":"ready"'
+          echo "$out" | grep -q '"evt":"state","state":"connected"'
+          echo "$out" | grep -q '"evt":"selftest_ok"'
+
   e2e:
     runs-on: ubuntu-latest
     services:
