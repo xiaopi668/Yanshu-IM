@@ -695,7 +695,10 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
             ) {
                 IconButton(
                     onClick = {
-                        scope.launch {
+                        // UNDISPATCHED：协程体在点击事件的同一个调用栈里立即执行，
+                        // 否则 input.click() 落到下一个调度周期，浏览器判定不是用户手势、
+                        // 直接忽略 —— 表现就是「点📎没反应、附件传不上去」。
+                        scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
                             val file = pickFile() ?: return@launch
                             try {
                                 client.sendAttachment(conversation.id, file)

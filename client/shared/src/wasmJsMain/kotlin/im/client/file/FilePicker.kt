@@ -9,41 +9,67 @@ import kotlin.coroutines.resume
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
+/**
+ * Web 端文件选择。
+ *
+ * 两个坑：
+ * 1) input.click() 必须发生在用户手势的同一个调用栈里，否则浏览器直接忽略
+ *    （调用方用 CoroutineStart.UNDISPATCHED 启动协程来保证这点）；
+ * 2) 取消对话框不触发 change，协程会永远挂起 —— 额外监听 cancel 事件。
+ */
 @OptIn(ExperimentalEncodingApi::class)
 actual suspend fun pickFile(): PickedFile? = suspendCancellableCoroutine { cont ->
+    println("[pickFile] 打开文件选择框")
     val input = document.createElement("input") as HTMLInputElement
     input.type = "file"
     input.style.display = "none"
     document.body?.appendChild(input)
+
+    var done = false
+    fun finish(v: PickedFile?) {
+        if (done) return
+        done = true
+        runCatching { document.body?.removeChild(input) }
+        cont.resume(v)
+    }
+
     input.onchange = {
         val files = input.files
         val file = if (files != null && files.length > 0) files.item(0) else null
         if (file == null) {
-            cont.resume(null)
+            println("[pickFile] 没有选中文件")
+            finish(null)
         } else {
+            val f = file as File
+            println("[pickFile] 选中 name=" + f.name + " size=" + f.size + " type=" + f.type)
             val reader = FileReader()
             reader.onload = { _ ->
-                val res = reader.result
-                if (res is String) {
-                    val b64 = res.substringAfter("base64,", "")
-                    if (b64.isNotEmpty()) {
-                        cont.resume(
-                            PickedFile(
-                                name = (file as File).name,
-                                mime = (file as File).type.ifEmpty { "application/octet-stream" },
-                                bytes = Base64.decode(b64),
-                            )
-                        )
-                    } else {
-                        cont.resume(null)
-                    }
+                val text = reader.result?.toString() ?: ""
+                println("[pickFile] onload 长度=" + text.length + " 前30字符=" + text.take(30))
+                val b64 = if (text.contains("base64,")) text.substringAfter("base64,") else ""
+                if (b64.isEmpty()) {
+                    println("[pickFile] 不是 data URL，放弃")
+                    finish(null)
                 } else {
-                    cont.resume(null)
+                    val bytes = runCatching { Base64.decode(b64) }.getOrElse {
+                        println("[pickFile] base64 解码失败: " + it)
+                        ByteArray(0)
+                    }
+                    if (bytes.isEmpty()) {
+                        finish(null)
+                    } else {
+                        println("[pickFile] 解码完成 " + bytes.size + " 字节，恢复协程")
+                        finish(PickedFile(f.name, f.type.ifEmpty { "application/octet-stream" }, bytes))
+                    }
                 }
             }
-            reader.readAsDataURL(file)
+            reader.onerror = { _ ->
+                println("[pickFile] FileReader 出错")
+                finish(null)
+            }
+            reader.readAsDataURL(f)
         }
-        document.body?.removeChild(input)
     }
+    input.addEventListener("cancel", { println("[pickFile] 用户取消"); finish(null) })
     input.click()
 }

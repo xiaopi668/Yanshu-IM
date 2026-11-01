@@ -431,7 +431,7 @@ fun MomentComposer(client: ImClient, onDone: () -> Unit) {
                     OutlinedButton(
                         enabled = !busy && keys.size < 9,
                         onClick = {
-                            scope.launch {
+                            scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
                                 try {
                                     busy = true
                                     val f = im.client.file.pickFile() ?: return@launch
@@ -592,7 +592,7 @@ fun ProfileDialog(
                     }
                 }
                 TextButton(onClick = {
-                    scope.launch {
+                    scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
                         try {
                             val f = im.client.file.pickFile() ?: return@launch
                             val key = client.api.uploadAttachment(client.myToken, "image", f.bytes)
