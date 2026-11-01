@@ -101,9 +101,26 @@ class Api(private val baseUrl: String) {
 
     /** 上传附件：返回下载用的相对 key */
     suspend fun uploadAttachment(token: String, kind: String, bytes: ByteArray): String {
-        val cred = request<Map<String, String>>("POST", "/v1/upload-token", "{\"kind\":\"$kind\"}", token)
-        Http.putBinary(cred["put_url"]!!, bytes)
-        return cred["key"]!!
+        val body = json.encodeToString(mapOf("kind" to kind))
+        val cred = request<Map<String, String>>("POST", "/v1/upload-token", body, token)
+        val putUrl = cred["put_url"] ?: throw RuntimeException("服务端未返回上传地址")
+        try {
+            Http.putBinary(putUrl, bytes)
+        } catch (e: Throwable) {
+            // 这个失败最常见的原因是「对象存储地址浏览器访问不到」：
+            // 部署时 IM_STORAGE_ENDPOINT 填了内网主机名（如 minio:9000），
+            // 预签名 URL 就指向那个地址，浏览器解析不了；
+            // 其次是桶没配 CORS，浏览器会被跨域策略拦掉。
+            // 不把地址带出来的话，用户只看到「上传失败」，根本无从排查。
+            val host = putUrl.substringAfter("://", putUrl).substringBefore("/")
+            throw RuntimeException(
+                "附件上传失败：无法访问对象存储 $host。" +
+                    "请确认 IM_STORAGE_ENDPOINT 是浏览器可达的地址（不要用容器内主机名），" +
+                    "并给存储桶配置允许本站来源的 CORS",
+                e,
+            )
+        }
+        return cred["key"] ?: throw RuntimeException("服务端未返回对象 key")
     }
 
     /**

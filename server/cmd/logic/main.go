@@ -75,6 +75,7 @@ func main() {
 	// 曾经为了等 MinIO 在监听前重试，结果存储一挂整个 API 就长时间不可用 ——
 	// 附件不可用不该拖垮登录、消息、好友这些与存储无关的功能。
 	go storage.ConnectWithRetry(cfg, objects, nil)
+	checkStorageReachability(cfg)
 	a.startArchiver()
 
 	mux := http.NewServeMux()
@@ -578,4 +579,30 @@ func (a *apiv1) updateMe(w http.ResponseWriter, r *http.Request, uid string) {
 		}
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// checkStorageReachability 启动自检：对象存储地址是不是「浏览器够得着」的地址。
+//
+// 附件是客户端直传（预签名 URL 由浏览器直接 PUT），所以 IM_STORAGE_ENDPOINT 必须是
+// 外部可达的主机名/IP。填成容器内名称（minio:9000）或 127.0.0.1 时：
+//   - 服务端自己上传/下载没问题（同网络）
+//   - 浏览器直传必然失败，表现为「附件发不出去」，且错误信息与网络错误无异
+//
+// 这是一个很难自查的部署坑，因此在启动日志里直接点出来。
+func checkStorageReachability(cfg *config.Config) {
+	ep := cfg.StorageEndpoint
+	if ep == "" {
+		return
+	}
+	host := ep
+	if i := strings.LastIndex(host, ":"); i > 0 {
+		host = host[:i]
+	}
+	private := host == "127.0.0.1" || host == "localhost" || host == "::1" ||
+		!strings.Contains(host, ".")
+	if private && cfg.PublicBaseURL != "" {
+		log.Printf("[storage] 警告: IM_STORAGE_ENDPOINT=%s 看起来是内网地址，而站点对外地址是 %s。"+
+			"附件由浏览器直传，预签名地址必须外部可达，否则用户会看到「附件发送失败」。",
+			ep, cfg.PublicBaseURL)
+	}
 }
