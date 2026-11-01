@@ -107,4 +107,43 @@ class MemoryStoreTest {
         assertEquals("s519", list.last().serverMsgId)
         assertTrue(list.zipWithNext().all { (a, b) -> a.seq < b.seq })
     }
+
+    /**
+     * 回归测试：setConversations 不得把 maxSeqs 顶到服务端的 last_seq。
+     *
+     * maxSeqs 的语义是「本地真正收到的最大 seq」，refreshConversations / loadHistory
+     * 都拿它当 pull 的 afterSeq。一旦被 last_seq 顶替，pull(afterSeq=last_seq)
+     * 永远返回 0 条 —— 表现就是刷新页面后聊天记录整段空白（服务端搜索却搜得到）。
+     *
+     * 这个语义回归过两次（一次只改调用侧、一次只改游标），用测试钉住。
+     */
+    @Test
+    fun setConversationsMustNotAdvanceMaxSeq() {
+        val (store, _) = newStore()
+        store.setConversations(
+            listOf(
+                Conversation("c1", "single", "阿波", lastSeq = 50, readSeq = 0),
+                Conversation("c2", "group", "产品组", lastSeq = 9, readSeq = 9),
+            )
+        )
+        // 只是「知道服务端有 50 条」，不代表本地收到过
+        assertEquals(0L, store.maxSeqs.value["c1"] ?: 0L)
+        assertEquals(0L, store.maxSeqs.value["c2"] ?: 0L)
+
+        // 真正收到消息后，游标才推进
+        store.upsertMessage(
+            Msg(
+                conversationId = "c1",
+                serverMsgId = "srv-7",
+                seq = 7,
+                fromUid = "u2",
+                msgType = MsgType.Text,
+                text = "在吗",
+                sentAt = 100,
+            )
+        )
+        assertEquals(7L, store.maxSeqs.value["c1"])
+        // 只收到 1 条，仍远小于服务端的 50 —— 调用侧据此才会继续 pull
+        assertTrue((store.maxSeqs.value["c1"] ?: 0L) < 50L)
+    }
 }

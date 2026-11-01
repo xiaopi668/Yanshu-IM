@@ -19,7 +19,6 @@ import kotlin.io.encoding.ExperimentalEncodingApi
  */
 @OptIn(ExperimentalEncodingApi::class)
 actual suspend fun pickFile(): PickedFile? = suspendCancellableCoroutine { cont ->
-    println("[pickFile] 打开文件选择框")
     val input = document.createElement("input") as HTMLInputElement
     input.type = "file"
     input.style.display = "none"
@@ -37,15 +36,12 @@ actual suspend fun pickFile(): PickedFile? = suspendCancellableCoroutine { cont 
         val files = input.files
         val file = if (files != null && files.length > 0) files.item(0) else null
         if (file == null) {
-            println("[pickFile] 没有选中文件")
             finish(null)
         } else {
             val f = file as File
-            println("[pickFile] 选中 name=" + f.name + " size=" + f.size + " type=" + f.type)
             val reader = FileReader()
             reader.onload = { _ ->
                 val text = reader.result?.toString() ?: ""
-                println("[pickFile] onload 长度=" + text.length + " 前30字符=" + text.take(30))
                 val b64 = if (text.contains("base64,")) text.substringAfter("base64,") else ""
                 if (b64.isEmpty()) {
                     println("[pickFile] 不是 data URL，放弃")
@@ -58,7 +54,6 @@ actual suspend fun pickFile(): PickedFile? = suspendCancellableCoroutine { cont 
                     if (bytes.isEmpty()) {
                         finish(null)
                     } else {
-                        println("[pickFile] 解码完成 " + bytes.size + " 字节，恢复协程")
                         finish(PickedFile(f.name, f.type.ifEmpty { "application/octet-stream" }, bytes))
                     }
                 }
@@ -70,6 +65,6 @@ actual suspend fun pickFile(): PickedFile? = suspendCancellableCoroutine { cont 
             reader.readAsDataURL(f)
         }
     }
-    input.addEventListener("cancel", { println("[pickFile] 用户取消"); finish(null) })
+    input.addEventListener("cancel", { finish(null) })
     input.click()
 }
