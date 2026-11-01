@@ -4,11 +4,8 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.ui.Modifier
 import im.client.auth.AndroidOidc
 import im.client.db.appContext
 import im.client.file.AndroidFilePicker
@@ -30,12 +27,15 @@ class MainActivity : ComponentActivity() {
         AndroidFilePicker.resolver = contentResolver
         // OIDC 回调：App 被回收后由 yanshu:// deep link 冷启动，令牌就在这个 Intent 里
         AndroidOidc.onUri(intent?.data)
+        // Material 3 要求 edge-to-edge：内容画到系统栏后面，由 Scaffold 的
+        // contentWindowInsets 统一留出安全区。不调用的话，targetSdk 35+ 上系统仍会
+        // 强制 edge-to-edge，但系统栏图标的明暗不会跟随深浅色 —— 深色模式下会看不见。
+        enableEdgeToEdge()
         setContent {
-            MaterialTheme {
-                Surface(Modifier.fillMaxSize()) {
-                    AppRoot()
-                }
-            }
+            // 原写法：再包一层 MaterialTheme + Surface(默认色)。
+            // 那层用的是 M3 基线配色（紫色），在 AppRoot 的 YanshuTheme 生效前会闪一下；
+            // 现在由 AppRoot 自己提供主题与底色，宿主只负责装载。
+            AppRoot()
         }
     }
 
