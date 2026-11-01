@@ -35,7 +35,6 @@ fun ImClient.wireCallbacks(scope: CoroutineScope = CoroutineScope(SupervisorJob(
     }.launchIn(scope)
 
     connection.pullResps.onEach { resp ->
-        store.setMaxSeqs(mapOf(resp.conversationId to resp.maxSeq))
         resp.msgs.forEach { store.upsertMessage(it) }
         // has_more：以本次收到的最后一条 seq 为游标继续拉下一页
         if (resp.hasMore && resp.msgs.isNotEmpty()) {
@@ -53,12 +52,12 @@ fun ImClient.wireCallbacks(scope: CoroutineScope = CoroutineScope(SupervisorJob(
 
     connection.authResults.onEach { r ->
         if (r.ok) {
-            store.setMaxSeqs(r.maxSeqs)
-            // 重连后按 seq 概览拉补（离线期间漏掉的消息）
+            // 重连后按「本地已有的最大 seq」拉补（离线期间漏掉的消息）。
+            // 用 read_seq 当游标的话，已读完的会话（read_seq == last_seq）永远不会补拉，
+            // 刷新后就是一段空白；用 maxSeqs 才是「我到底有没有这些消息」。
             r.maxSeqs.forEach { (cid, maxSeq) ->
-                val local = store.conversations.value.firstOrNull { it.id == cid }
-                val read = local?.readSeq ?: 0
-                if (maxSeq > read) connection.pull(cid, read)
+                val have = store.maxSeqs.value[cid] ?: 0L
+                if (maxSeq > have) connection.pull(cid, have)
             }
             // 重连成功：把断线期间没发出去 / 没被确认的消息补发一遍。
             // 服务端按 client_msg_id 幂等，重发不会产生重复消息。
