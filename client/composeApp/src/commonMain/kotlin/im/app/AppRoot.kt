@@ -164,6 +164,8 @@ data class SiteConfigResp(
     val turnstile_site_key: String = "",
     val email_code_enabled: Boolean = false,
     val oidc_providers: List<OidcProviderInfo> = emptyList(),
+    /** LiveKit SFU 地址（wss://…）。为空表示服务端没配，通话不可用 */
+    val livekit_url: String = "",
 )
 
 @kotlinx.serialization.Serializable
@@ -339,6 +341,11 @@ fun MainScreen(
             onCancel = { client.callController.cancelCall() },
         )
         im.client.CallState.InCall -> InCallOverlay(
+            peer = callState.peerUid.takeLast(8),
+            media = callState.media,
+            error = callState.mediaError,
+            muted = callState.muted,
+            onToggleMute = { client.callController.toggleMute() },
             onHangUp = { client.callController.hangUp() },
         )
         else -> {}
@@ -393,25 +400,65 @@ fun CallingOverlay(peer: String, onCancel: () -> Unit) {
     }
 }
 
+/**
+ * 通话中界面。
+ *
+ * 之前这里是三行占位文字（"媒体由平台 WebRTC 承载"），实际上没有任何声音通道 ——
+ * 用户看到"通话中"却听不到对方。现在按媒体面的真实状态显示，并提供静音/挂断。
+ */
 @Composable
-fun InCallOverlay(onHangUp: () -> Unit) {
-    // 同上：Surface 承担遮罩，文字用语义色而不是硬编码白色
+fun InCallOverlay(
+    peer: String,
+    media: im.client.CallMediaState,
+    error: String,
+    muted: Boolean,
+    onToggleMute: () -> Unit,
+    onHangUp: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val (status, statusColor) = when (media) {
+        im.client.CallMediaState.Connecting -> "正在接入语音…（如弹出麦克风授权请允许）" to scheme.inverseOnSurface
+        // 注意括号：if 的优先级低于 to，不加括号会变成 if (a) x else (y to c)
+        im.client.CallMediaState.Connected ->
+            (if (muted) "已静音（对方听不到你）" else "已接通") to scheme.primary
+        im.client.CallMediaState.Failed -> (error.ifBlank { "媒体接入失败" }) to scheme.error
+        im.client.CallMediaState.Unsupported -> (error.ifBlank { "该平台暂不支持通话" }) to scheme.error
+        im.client.CallMediaState.None -> "准备中…" to scheme.inverseOnSurface
+    }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f),
-        contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+        color = scheme.scrim.copy(alpha = 0.6f),
+        contentColor = scheme.inverseOnSurface,
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("通话中（媒体由平台 WebRTC 承载）", style = MaterialTheme.typography.titleMedium)
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(horizontal = 24.dp),
+            ) {
+                Text(if (peer.isBlank()) "通话中" else "与 $peer 通话中", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    "音视频画面在通话面板中显示",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = 0.8f),
-                )
+                Text(status, style = MaterialTheme.typography.bodySmall, color = statusColor)
+
+                if (media == im.client.CallMediaState.Connecting) {
+                    Spacer(Modifier.height(16.dp))
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                }
+
                 Spacer(Modifier.height(24.dp))
-                Button(onClick = onHangUp) { Text("挂断") }
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    // 静音只在真正接通后有意义
+                    FilledTonalButton(
+                        onClick = onToggleMute,
+                        enabled = media == im.client.CallMediaState.Connected,
+                    ) {
+                        Text(if (muted) "取消静音" else "静音")
+                    }
+                    Button(
+                        onClick = onHangUp,
+                        colors = ButtonDefaults.buttonColors(containerColor = scheme.error, contentColor = scheme.onError),
+                    ) { Text("挂断") }
+                }
             }
         }
     }

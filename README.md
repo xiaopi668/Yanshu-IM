@@ -14,8 +14,9 @@
 - 注册 / 登录（bcrypt + JWT）、多端在线
 - 单聊、群聊（写扩散）、消息可靠投递（会话 seq + ACK + 离线拉补）
 - 多媒体消息：图片 / 文件 / 语音 / 视频（预签名直传）
-- 1v1 音视频通话（自托管 LiveKit SFU + 内嵌 TURN）：**服务端**信令状态机与 LiveKit token 签发已完成；
-  **客户端媒体层尚未接入**，接听后只会停在通话状态、没有画面与声音（见「已知限制」）
+- 1v1 语音通话（自托管 LiveKit SFU + 内嵌 TURN）：信令状态机 + LiveKit token 签发 + **Web 端媒体面已接通**
+  （入会、申请麦克风、发布/订阅音轨、静音、挂断释放设备）；
+  Android 与桌面端媒体面尚未实现，通话界面会明确提示「该平台暂不支持通话」（见「已知限制」）
 - 会话列表、未读、消息历史拉取、离线增量同步
 - 登录/注册按 IP 限流；管理后台封禁对 **WS 与 REST 同时生效**，重置密码会递增令牌版本，
   使该账号已签发的 JWT **立即失效**（不是等 7 天自然过期）
@@ -296,8 +297,11 @@ curl -X POST http://127.0.0.1:10002/v1/register -d '{"username":"bob","password"
   多副本部署时邀请/统计只在本副本准确；消息投递与 seq 已经是跨进程正确的
 - **多副本部署必须给每个实例设置不同的 `IM_NODE_ID`**，否则雪花 ID 会碰撞（默认 gateway=1 / logic=2）
 - **客户端没有任何 WebRTC/媒体层实现**：`CallController.onSessionReady` 没有平台实现，
-  接听后进入的是"假 InCall"状态，必须按平台补齐（Android webrtc-android / Web livekit-client JS interop）
-  或先显式禁用通话入口
+  **Web 端已接通**（livekit-client 随包发，不依赖 CDN；本地用 LiveKit dev 服务器 + 假麦克风实测
+  两端可互相订阅音轨）。**Android 与桌面端仍是"假 InCall"**：Android 需接 io.livekit:livekit-android
+  + RECORD_AUDIO 权限 + 前台服务；桌面没有官方 Kotlin SDK，需 webrtc-java 或内嵌 WebView。
+  两端当前会显示「该平台暂不支持通话」，不会让人对着无声界面发呆。
+  另外 `LiveKitHost` 部署时必须配成公网 `wss://`，否则 HTTPS 站点会被混合内容拦截
 - 通话信令（`CallSignal`）自身没有失败应答，被叫忙/拒接等语义仍靠 `CALL_BUSY`/`CALL_REJECT` 表达
 - 朋友圈动态按 `moment.id`（雪花，字典序）分页，2031 年前等价于时间序
 - 只有客户端 → 服务端的已读上报（`MsgRead`），服务端没有「已读回执」下行帧

@@ -21,6 +21,15 @@ enum class CallState {
     InCall,      // 通话中（已拿 LiveKit token）
 }
 
+/** 媒体面（LiveKit）连接状态，与信令状态分开：信令通了不代表声音通了 */
+enum class CallMediaState {
+    None,         // 还没进通话
+    Connecting,   // 正在入会 / 申请麦克风
+    Connected,    // 已入会，麦克风已打开
+    Failed,       // 入会失败（权限被拒、连不上、地址没配…）
+    Unsupported,  // 该平台没有媒体实现
+}
+
 data class CallUiState(
     val state: CallState = CallState.Idle,
     val callId: String = "",
@@ -28,6 +37,9 @@ data class CallUiState(
     val roomName: String = "",
     val livekitToken: String = "",
     val video: Boolean = true,
+    val media: CallMediaState = CallMediaState.None,
+    val mediaError: String = "",
+    val muted: Boolean = false,
 )
 
 /**
@@ -37,11 +49,19 @@ class CallController(
     val connection: ImConnection,
     internal var myUid: String,
     private val scope: kotlinx.coroutines.CoroutineScope = kotlinx.coroutines.CoroutineScope(SupervisorJob()),
+    /** 媒体面实现：Web=livekit-client，桌面/Android 暂不支持 */
+    private val media: im.client.call.MediaSession = im.client.call.createMediaSession(),
 ) {
     private val _state = MutableStateFlow(CallUiState())
     val uiState: StateFlow<CallUiState> = _state
 
-    /** 媒体面接入回调（平台 actual 提供：Android=webrtc-android, Web=livekit-client JS） */
+    /** LiveKit SFU 地址（来自 site-config 的 livekit_url），登录后由界面层赋值 */
+    var livekitUrl: String = ""
+
+    /** 当前平台是否支持通话媒体（UI 据此提示，而不是假装在通话） */
+    val mediaSupported: Boolean get() = media.supported
+
+    /** 保留给外部的观察钩子（统计/提示用）；媒体接入已由 media 接管 */
     var onSessionReady: suspend (roomName: String, token: String) -> Unit = { _, _ -> }
     var onCallEnded: suspend () -> Unit = {}
 
@@ -112,7 +132,25 @@ class CallController(
                 onCallEnded()
             }
         }
+        teardownMedia()
         _state.value = CallUiState()
+    }
+
+    /** 静音 / 取消静音（只在通话中有效） */
+    fun toggleMute() {
+        val s = _state.value
+        if (s.state != CallState.InCall) return
+        val next = !s.muted
+        media.setMuted(next)
+        _state.value = s.copy(muted = next)
+    }
+
+    /**
+     * 释放媒体资源：离开房间、关掉麦克风。
+     * 所有「通话结束」的路径都必须经过这里，否则麦克风指示灯会一直亮着。
+     */
+    private fun teardownMedia() {
+        scope.launch { runCatching { media.leave() } }
     }
 
     private suspend fun handleSignal(sig: CallSignalData) {
@@ -128,23 +166,58 @@ class CallController(
             CallEventType.Accept -> {
                 // 主叫/被叫都会收到（带各自的 token）
                 val prev = _state.value
+                // 平台不支持 / 地址没配：如实告知，不要停在"看起来在通话"的状态
+                if (!media.supported) {
+                    _state.value = prev.copy(
+                        state = CallState.InCall,
+                        roomName = sig.roomName,
+                        livekitToken = sig.livekitToken,
+                        media = CallMediaState.Unsupported,
+                        mediaError = "该平台暂不支持通话（仅 Web 端可用）",
+                    )
+                    return
+                }
+                if (livekitUrl.isBlank()) {
+                    _state.value = prev.copy(
+                        state = CallState.InCall,
+                        roomName = sig.roomName,
+                        livekitToken = sig.livekitToken,
+                        media = CallMediaState.Failed,
+                        mediaError = "服务端未配置通话地址（livekit_url）",
+                    )
+                    return
+                }
                 _state.value = prev.copy(
                     state = CallState.InCall,
                     roomName = sig.roomName,
                     livekitToken = sig.livekitToken,
+                    media = CallMediaState.Connecting,
+                    mediaError = "",
                 )
                 onSessionReady(sig.roomName, sig.livekitToken)
+                scope.launch {
+                    val r = media.join(livekitUrl, sig.livekitToken)
+                    val cur = _state.value
+                    if (cur.state != CallState.InCall) return@launch  // 期间已挂断
+                    _state.value = cur.copy(
+                        media = if (r.isSuccess) CallMediaState.Connected else CallMediaState.Failed,
+                        mediaError = r.exceptionOrNull()?.message ?: "",
+                    )
+                }
             }
             CallEventType.Reject -> {
                 onCallEnded()
+                teardownMedia()
                 _state.value = CallUiState()
             }
             CallEventType.Cancel -> {
                 onCallEnded()
+                teardownMedia()
                 _state.value = CallUiState()
             }
             CallEventType.Hangup, CallEventType.Timeout, CallEventType.Busy -> {
                 onCallEnded()
+                teardownMedia()
                 _state.value = CallUiState()
             }
         }

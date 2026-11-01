@@ -79,6 +79,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
     suspend fun finishOidcLogin(token: String) {
         try {
             val c = ImClient(apiBase.trimEnd('/'), wsBase)
+            c.callController.livekitUrl = siteCfg?.livekit_url ?: ""
             c.wireCallbacks()
             c.loginWithToken(token)
             c.startSession()
@@ -258,6 +259,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                             scope.launch {
                                 try {
                                     val client = ImClient(apiBase.trimEnd('/'), wsBase)
+                                    client.callController.livekitUrl = siteCfg?.livekit_url ?: ""
                                     client.wireCallbacks()
                                     client.login(username, password, turnstileToken)
                                     client.startSession()
@@ -281,6 +283,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                 scope.launch {
                                     try {
                                         val client = ImClient(apiBase.trimEnd('/'), wsBase)
+                                        client.callController.livekitUrl = siteCfg?.livekit_url ?: ""
                                         client.wireCallbacks()
                                         // 注册接口本身就返回令牌，直接用它登录。
                                         // 不能再调一次 login：Turnstile 令牌是一次性的，

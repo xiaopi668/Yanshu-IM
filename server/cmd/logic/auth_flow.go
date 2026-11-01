@@ -57,6 +57,9 @@ func (a *apiv1) publicSiteConfig(w http.ResponseWriter, r *http.Request) {
 		"turnstile_site_key":   c.TurnstileSiteKey,
 		"email_code_enabled":   c.EmailCodeEnabled,
 		"oidc_providers":       oidcList,
+		// 通话媒体面（LiveKit SFU）的连接地址。不是密钥：客户端拿到它 + room token 才能入会。
+		// 站点是 HTTPS 时必须配成 wss://，否则浏览器按混合内容拦掉。
+		"livekit_url": a.cfg.LiveKitHost,
 	})
 }
 
