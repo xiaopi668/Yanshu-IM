@@ -164,18 +164,27 @@ class ImClient(
         val list = api.conversations(myToken)
         store.setConversations(list.map { Conversation(it.id, it.type, it.title, it.last_seq, it.read_seq) })
         list.forEach { conv ->
-            val pending = list.first { it.id == conv.id }
-            if (pending.last_seq > pending.read_seq) {
-                connection.pull(conv.id, pending.read_seq)
+            // 关键：按「本地已有最大 seq」判断缺多少，而不是按「已读位置」。
+            // 用 read_seq 的话，一个会话只要没有未读消息就不会拉补 ——
+            // 刷新页面后本地缓存是空的，聊天记录就整段消失（服务端搜索却还能搜到）。
+            val localMax = store.maxSeqs.value[conv.id] ?: 0L
+            if (conv.last_seq > localMax) {
+                connection.pull(conv.id, localMax)
             }
         }
     }
 
+    /**
+     * 加载某个会话的历史（分页由 ImClientWire 的 has_more 续拉负责）。
+     *
+     * 之前这个方法没有任何调用点 —— 刷新后只有"有未读"的会话才会拉消息，
+     * 已读完的会话是一段空白。现在由聊天页在进入时显式调用。
+     */
     suspend fun loadHistory(conversationId: String) {
         val conv = store.conversations.value.firstOrNull { it.id == conversationId } ?: return
-        if (conv.lastSeq > 0) {
-            connection.pull(conversationId, 0)
-        }
+        if (conv.lastSeq <= 0) return
+        val localMax = store.maxSeqs.value[conversationId] ?: 0L
+        connection.pull(conversationId, localMax)
     }
 
     suspend fun sendMessage(conversationId: String, text: String, type: MsgType = MsgType.Text): Msg {

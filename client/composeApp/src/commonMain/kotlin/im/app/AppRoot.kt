@@ -615,6 +615,12 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
+    // 进入会话先补历史：刷新页面后本地缓存是空的，不主动拉就只剩空白
+    //（服务端搜索能搜到，聊天页却没有 —— 用户反馈过这个割裂现象）
+    LaunchedEffect(conversation.id) {
+        runCatching { client.loadHistory(conversation.id) }
+    }
+
     LaunchedEffect(conversation.id, msgs.size) {
         if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1)
     }
