@@ -106,6 +106,10 @@ func main() {
 	mux.HandleFunc("GET /oidc-done", a.oidcDonePage)
 	mux.Handle("PUT /v1/me/yid", a.authed(a.changeYid))
 	mux.Handle("PUT /v1/me", a.authed(a.updateMe))
+	// 账号自助：改密码 / 改邮箱 / 退出其它设备
+	mux.Handle("POST /v1/me/password", a.authed(a.changePassword))
+	mux.Handle("POST /v1/me/logout-others", a.authed(a.logoutOtherDevices))
+	mux.Handle("PUT /v1/me/email", a.authed(a.setEmail))
 	// 二期：通讯录
 	mux.Handle("POST /v1/contacts/request", a.authed(a.contactRequest))
 	mux.Handle("POST /v1/contacts/{id}/accept", a.authed(a.contactAccept))

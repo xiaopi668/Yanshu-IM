@@ -163,6 +163,29 @@ class Api(private val baseUrl: String) {
         request<Map<String, String>>("PUT", "/v1/me/yid", "{\"yid\":\"$newId\"}", token)
     }
 
+    /**
+     * 修改密码。服务端会递增令牌版本让**其它设备**立即失效，
+     * 并返回一个新令牌给当前设备（否则改完自己也掉线）。
+     */
+    suspend fun changePassword(token: String, oldPassword: String, newPassword: String): String {
+        val body = "{\"old_password\":\"" + jsonEscape(oldPassword) +
+            "\",\"new_password\":\"" + jsonEscape(newPassword) + "\"}"
+        val resp = request<Map<String, String>>("POST", "/v1/me/password", body, token)
+        return resp["token"] ?: ""
+    }
+
+    /** 让其它设备下线；当前设备返回新令牌 */
+    suspend fun logoutOtherDevices(token: String): String {
+        val resp = request<Map<String, String>>("POST", "/v1/me/logout-others", "{}", token)
+        return resp["token"] ?: ""
+    }
+
+    /** 绑定 / 修改邮箱（站点开启邮箱验证码时需要 code） */
+    suspend fun setEmail(token: String, email: String, code: String = "") {
+        val body = "{\"email\":\"" + jsonEscape(email) + "\",\"code\":\"" + jsonEscape(code) + "\"}"
+        request<Map<String, String>>("PUT", "/v1/me/email", body, token)
+    }
+
     /** 朋友圈相关 */
     suspend fun createMoment(token: String, text: String, images: List<String>): String {
         val imgs = images.joinToString(",") { "\"$it\"" }
@@ -379,4 +402,29 @@ suspend fun rawHttpText(method: String, url: String, body: String? = null): Stri
     val (code, text) = Http.execute(method, url, body, null)
     if (code >= 400) throw ApiException(httpErrorMessage(code, text), code, text)
     return text
+}
+
+/**
+ * 最小 JSON 字符串转义。
+ *
+ * 现有请求体都是手拼的 JSON，密码里一旦出现引号或反斜杠就会拼出非法 JSON
+ * （服务端只会回 400，排查起来很费劲）。这里统一转义。
+ */
+internal fun jsonEscape(s: String): String {
+    val sb = StringBuilder(s.length + 8)
+    for (c in s) {
+        when (c) {
+            '"' -> sb.append("\\\"")
+            '\\' -> sb.append("\\\\")
+            '\n' -> sb.append("\\n")
+            '\r' -> sb.append("\\r")
+            '\t' -> sb.append("\\t")
+            else -> if (c.code < 0x20) {
+                sb.append("\\u").append(c.code.toString(16).padStart(4, '0'))
+            } else {
+                sb.append(c)
+            }
+        }
+    }
+    return sb.toString()
 }

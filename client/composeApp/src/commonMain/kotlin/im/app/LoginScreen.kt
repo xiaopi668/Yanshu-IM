@@ -55,6 +55,15 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
     var password by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var emailCode by remember { mutableStateOf("") }
+    // 发送验证码后的冷却：服务端本身有频率限制，但界面上没有任何反馈，
+    // 用户只会反复点（然后吃到 429）。这里做成 60 秒倒计时，顺带给出明确预期。
+    var codeCooldown by remember { mutableStateOf(0) }
+    LaunchedEffect(codeCooldown) {
+        if (codeCooldown > 0) {
+            delay(1000)
+            codeCooldown -= 1
+        }
+    }
     var showPassword by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -180,37 +189,52 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                         Spacer(Modifier.height(16.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.weight(1f)) {
-                                AuthField(email, { email = it }, "邮箱（注册用，可留空）")
+                                // 标签必须跟随站点要求：开了邮箱验证码就是必填，
+                                // 还写「可留空」会让用户填完了才被服务端打回（截图里的那种情况）
+                                AuthField(
+                                    email, { email = it },
+                                    if (siteCfg?.email_code_enabled == true) "邮箱（必填，需收验证码）"
+                                    else "邮箱（选填，可用于登录）",
+                                )
                             }
                             if (siteCfg?.email_code_enabled == true) {
                                 Spacer(Modifier.width(8.dp))
                                 OutlinedButton(
-                                    enabled = email.contains("@") && !busy,
+                                    enabled = email.contains("@") && !busy && codeCooldown == 0,
                                     onClick = {
                                         scope.launch {
                                             try {
                                                 val ok = apiSendEmailCode(apiBase.trimEnd('/'), email, turnstileToken)
-                                                if (ok) tip = "验证码已发送（5 分钟内有效）"
+                                                if (ok) {
+                                                    tip = "验证码已发送（5 分钟内有效）"
+                                                    // 冷却 60s：既防连点，也把「5 分钟有效」的预期讲清楚
+                                                    codeCooldown = 60
+                                                }
                                             } catch (e: Throwable) {
                                                 error = e.message ?: e.toString()
                                             }
                                         }
                                     },
                                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 14.dp),
-                                ) { Text("发送验证码", style = MaterialTheme.typography.labelMedium) }
+                                ) {
+                                    Text(
+                                        if (codeCooldown > 0) codeCooldown.toString() + " 秒后重发" else "发送验证码",
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                }
                             }
                         }
                         if (siteCfg?.email_code_enabled == true) {
                             Spacer(Modifier.height(16.dp))
-                            AuthField(emailCode, { emailCode = it }, "邮箱验证码")
-                            if (email.isBlank()) {
-                                Spacer(Modifier.height(8.dp))
-                                Text(
-                                    "本站要求邮箱验证码：请先填邮箱并点「发送验证码」",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
+                            AuthField(emailCode, { emailCode = it }, "邮箱验证码（必填）")
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                if (email.isBlank()) "本站要求邮箱验证码：请先填邮箱并点「发送验证码」"
+                                else "请输入邮箱里收到的验证码（5 分钟内有效）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (email.isBlank()) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     } else if (isRegister) {
                         // 之前这里什么都不显示：注册被关闭时整个注册区（含邮箱框）静默消失，
@@ -279,6 +303,14 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                         OutlinedButton(
                             enabled = !busy && !turnstilePending && username.isNotBlank() && password.isNotBlank(),
                             onClick = {
+                                // 先本地校验：站点要求邮箱验证时，缺邮箱或验证码直接提示，
+                                // 不发一个必然 400 的请求再拿服务端文案回来
+                                if (siteCfg?.email_code_enabled == true &&
+                                    (email.isBlank() || emailCode.isBlank())
+                                ) {
+                                    error = "本站要求邮箱验证：请填写邮箱并填入收到的验证码"
+                                    return@OutlinedButton
+                                }
                                 busy = true; error = null; tip = null
                                 scope.launch {
                                     try {

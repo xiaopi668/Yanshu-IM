@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -27,6 +28,7 @@ import im.client.api.ContactRequestResp
 import im.client.api.ContactResp
 import im.client.api.MomentResp
 import im.client.openUrl
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 // ============ 通讯录 ============
@@ -538,6 +540,9 @@ fun ProfileDialog(
     var originalYid by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    // 账号安全子对话框
+    var showPasswordDialog by remember { mutableStateOf(false) }
+    var showEmailDialog by remember { mutableStateOf(false) }
 
     var avatarKey by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
@@ -682,7 +687,62 @@ fun ProfileDialog(
                         }
                     }
                 }
-                msg?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall) }
+                // ---------- 账号安全 ----------
+                Spacer(Modifier.height(24.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "账号安全",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilledTonalButton(
+                        onClick = { showPasswordDialog = true },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("修改密码") }
+                    FilledTonalButton(
+                        onClick = {
+                            scope.launch {
+                                try {
+                                    client.logoutOtherDevices()
+                                    msg = "其它设备已下线，当前设备保持登录"
+                                } catch (e: Throwable) {
+                                    msg = "操作失败：" + (e.message ?: e.toString())
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("退出其它设备") }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { showEmailDialog = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("修改邮箱") }
+
+                msg?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                }
+                if (showPasswordDialog) {
+                    ChangePasswordDialog(
+                        client = client,
+                        onDismiss = { showPasswordDialog = false },
+                        onDone = { msg = it },
+                    )
+                }
+                if (showEmailDialog) {
+                    ChangeEmailDialog(
+                        client = client,
+                        onDismiss = { showEmailDialog = false },
+                        onDone = { msg = it },
+                    )
+                }
             }
         },
         confirmButton = {
@@ -877,3 +937,203 @@ fun GroupInfoDialog(client: ImClient, convId: String, title: String, onLeft: () 
         dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
     )
 }
+
+// ============ 账号安全：修改密码 / 修改邮箱 ============
+
+/**
+ * 修改密码。
+ *
+ * 服务端改完会递增令牌版本（其它设备立即失效）并下发新令牌；
+ * ImClient.changePassword 内部已经换令牌 + 重连，所以这里不需要额外处理登录态。
+ */
+@Composable
+fun ChangePasswordDialog(
+    client: ImClient,
+    onDismiss: () -> Unit,
+    onDone: (String) -> Unit,
+) {
+    var oldPwd by remember { mutableStateOf("") }
+    var newPwd by remember { mutableStateOf("") }
+    var confirmPwd by remember { mutableStateOf("") }
+    var err by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("修改密码") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    oldPwd, { oldPwd = it },
+                    label = { Text("当前密码") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    newPwd, { newPwd = it },
+                    label = { Text("新密码（至少 6 位）") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    confirmPwd, { confirmPwd = it },
+                    label = { Text("确认新密码") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "修改成功后，其它设备上的登录会立即失效",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                err?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy,
+                onClick = {
+                    // 先本地校验：不一致/太短就别发请求了
+                    err = when {
+                        newPwd.length < 6 -> "新密码至少 6 位"
+                        newPwd != confirmPwd -> "两次输入的新密码不一致"
+                        newPwd == oldPwd -> "新密码不能与当前密码相同"
+                        else -> null
+                    }
+                    if (err != null) return@TextButton
+                    busy = true
+                    scope.launch {
+                        try {
+                            client.changePassword(oldPwd, newPwd)
+                            onDone("密码已修改，其它设备已下线")
+                            onDismiss()
+                        } catch (e: Throwable) {
+                            err = e.message ?: e.toString()
+                        } finally {
+                            busy = false
+                        }
+                    }
+                },
+            ) { Text(if (busy) "提交中…" else "确定") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
+        },
+    )
+}
+
+/**
+ * 修改 / 绑定邮箱。
+ *
+ * 站点开启邮箱验证码时必填 code（与注册同一套校验）；未开启时直接生效。
+ * 这里不去预判站点开关 —— 让服务端说，UI 只把可选性写清楚。
+ */
+@Composable
+fun ChangeEmailDialog(
+    client: ImClient,
+    onDismiss: () -> Unit,
+    onDone: (String) -> Unit,
+) {
+    var email by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var err by remember { mutableStateOf<String?>(null) }
+    var tip by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    // 与注册页一致的 60 秒冷却，避免连点发送
+    var cooldown by remember { mutableStateOf(0) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(cooldown) {
+        if (cooldown > 0) {
+            delay(1000)
+            cooldown -= 1
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("修改邮箱") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    email, { email = it },
+                    label = { Text("邮箱") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        code, { code = it },
+                        label = { Text("验证码") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        enabled = email.isNotBlank() && !busy && cooldown == 0,
+                        onClick = {
+                            busy = true
+                            scope.launch {
+                                try {
+                                    client.api.sendEmailCode(email.trim())
+                                    tip = "验证码已发送，请查收邮箱"
+                                    err = null
+                                    cooldown = 60
+                                } catch (e: Throwable) {
+                                    err = e.message ?: e.toString()
+                                } finally {
+                                    busy = false
+                                }
+                            }
+                        },
+                    ) { Text(if (cooldown > 0) cooldown.toString() + " 秒" else "发送") }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "站点开启邮箱验证码时必填；留空邮箱可解除绑定",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                tip?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                }
+                err?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy,
+                onClick = {
+                    busy = true
+                    scope.launch {
+                        try {
+                            client.updateEmail(email.trim(), code.trim())
+                            onDone(if (email.isBlank()) "邮箱已解绑" else "邮箱已更新")
+                            onDismiss()
+                        } catch (e: Throwable) {
+                            err = e.message ?: e.toString()
+                        } finally {
+                            busy = false
+                        }
+                    }
+                },
+            ) { Text(if (busy) "提交中…" else "保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") } },
+    )
+}
+

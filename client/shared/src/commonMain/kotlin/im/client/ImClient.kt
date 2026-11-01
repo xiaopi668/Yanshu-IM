@@ -125,6 +125,41 @@ class ImClient(
         connection.disconnect()
     }
 
+    /**
+     * 令牌变更通知：改密码 / 退出其它设备后服务端会作废旧令牌并下发新令牌，
+     * 界面层据此更新本地保存的会话（否则下次启动会拿着已撤销的令牌）。
+     */
+    var onTokenRefreshed: ((String) -> Unit)? = null
+
+    /**
+     * 换用新令牌并重连。
+     *
+     * 必须重连：网关建连时记录了令牌版本，版本递增后旧连接会被服务端踢掉；
+     * 只改内存里的字符串而不重连，界面会表现为「刚改完密码就掉线」。
+     */
+    private suspend fun adoptToken(newToken: String) {
+        if (newToken.isEmpty()) return
+        myToken = newToken
+        connection.disconnect()
+        connection.connect(newToken)
+        onTokenRefreshed?.invoke(newToken)
+    }
+
+    /** 修改密码（成功后其它设备下线，当前设备自动换新令牌） */
+    suspend fun changePassword(oldPassword: String, newPassword: String) {
+        adoptToken(api.changePassword(myToken, oldPassword, newPassword))
+    }
+
+    /** 退出其它设备（当前设备保留） */
+    suspend fun logoutOtherDevices() {
+        adoptToken(api.logoutOtherDevices(myToken))
+    }
+
+    /** 绑定 / 修改邮箱 */
+    suspend fun updateEmail(email: String, code: String = "") {
+        api.setEmail(myToken, email, code)
+    }
+
     suspend fun refreshConversations() {
         val list = api.conversations(myToken)
         store.setConversations(list.map { Conversation(it.id, it.type, it.title, it.last_seq, it.read_seq) })
