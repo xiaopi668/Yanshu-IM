@@ -42,6 +42,25 @@ interface MediaSession {
      * 「静默失败」。默认空实现，只有能检测到异常的那一端（桌面侧车）覆盖它。
      */
     fun setOnBroken(callback: (String) -> Unit) {}
+
+    // ---------- 视频（可选能力） ----------
+    // 默认全部按「不支持」处理：桌面侧车只做音频，Android 视频属下一阶段。
+    // 只有真正实现了的端（目前是 Web）才覆盖。
+
+    /** 该端是否支持视频通话 */
+    val videoSupported: Boolean get() = false
+
+    /** 开/关摄像头。未接通时调用应安全忽略。 */
+    fun setVideoEnabled(enabled: Boolean) {}
+
+    /**
+     * 把视频画面的位置告诉平台层（Compose 坐标，单位 px）。
+     *
+     * 为什么需要它：Compose 画在 canvas 上，而视频必须用平台的 video/SurfaceView 渲染
+     * （浏览器端是 DOM <video>）。位置只能由 UI 回传，平台层在自己那边摆放，
+     * 否则画面会固定停在某个角落、盖住按钮 —— 人机验证小组件踩过同样的坑。
+     */
+    fun placeVideoSurfaces(left: Int, top: Int, width: Int, height: Int, localSize: Int) {}
 }
 
 expect fun createMediaSession(): MediaSession

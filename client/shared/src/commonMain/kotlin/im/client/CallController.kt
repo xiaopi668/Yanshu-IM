@@ -40,6 +40,8 @@ data class CallUiState(
     val media: CallMediaState = CallMediaState.None,
     val mediaError: String = "",
     val muted: Boolean = false,
+    /** 本端摄像头是否打开（仅 videoSupported 的平台有意义） */
+    val videoOn: Boolean = false,
 )
 
 /**
@@ -60,6 +62,15 @@ class CallController(
 
     /** 当前平台是否支持通话媒体（UI 据此提示，而不是假装在通话） */
     val mediaSupported: Boolean get() = media.supported
+
+    /** 当前平台是否支持视频画面（目前仅 Web） */
+    val videoSupported: Boolean get() = media.videoSupported
+
+    /**
+     * 交给 UI 的媒体面句柄：只用于回传「视频画面该摆在哪」。
+     * 不把 setVideoEnabled/setMuted 暴露给 UI —— 那些必须走 CallController 的状态机。
+     */
+    fun mediaSessionForUi(): im.client.call.MediaSession = media
 
     /** 保留给外部的观察钩子（统计/提示用）；媒体接入已由 media 接管 */
     var onSessionReady: suspend (roomName: String, token: String) -> Unit = { _, _ -> }
@@ -147,6 +158,22 @@ class CallController(
         _state.value = CallUiState()
     }
 
+    /**
+     * 开关本端摄像头。
+     *
+     * 设计：通话默认语音，任一方可以随时开摄像头；对端「收到视频轨就渲染」，
+     * 因此不需要在信令里传递「这是视频通话」——省掉一次协议改动，
+     * 也符合「中途开视频」的真实使用习惯。
+     */
+    fun setVideoEnabled(on: Boolean) {
+        val s = _state.value
+        if (s.state != CallState.InCall || !media.videoSupported) return
+        runCatching { media.setVideoEnabled(on) }
+        _state.value = s.copy(videoOn = on)
+    }
+
+    fun toggleVideo() = setVideoEnabled(!_state.value.videoOn)
+
     /** 静音 / 取消静音（只在通话中有效） */
     fun toggleMute() {
         val s = _state.value
@@ -221,6 +248,12 @@ class CallController(
                         media = if (r.isSuccess) CallMediaState.Connected else CallMediaState.Failed,
                         mediaError = r.exceptionOrNull()?.message ?: "",
                     )
+                    // 视频通话：入会成功后再开摄像头。
+                    // 摄像头权限被拒只会让画面没有，不该把已经接通的声音一起判失败。
+                    if (r.isSuccess && cur.video && media.videoSupported) {
+                        runCatching { media.setVideoEnabled(true) }
+                        _state.value = _state.value.copy(videoOn = true)
+                    }
                 }
             }
             CallEventType.Reject -> {

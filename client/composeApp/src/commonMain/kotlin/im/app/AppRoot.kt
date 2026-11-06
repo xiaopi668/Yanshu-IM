@@ -25,6 +25,8 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -403,6 +405,11 @@ fun MainScreen(
             durationSec = callDurationSec,
             onToggleMute = { client.callController.toggleMute() },
             onHangUp = { client.callController.hangUp() },
+            video = callState.video,
+            videoOn = callState.videoOn,
+            videoSupported = client.callController.videoSupported,
+            mediaSession = client.callController.mediaSessionForUi(),
+            onToggleVideo = { client.callController.toggleVideo() },
         )
         else -> {}
     }
@@ -480,8 +487,20 @@ fun InCallOverlay(
     durationSec: Long,
     onToggleMute: () -> Unit,
     onHangUp: () -> Unit,
+    /** 本次是否为视频通话（信令侧决定） */
+    video: Boolean = false,
+    /** 本端摄像头是否已打开 */
+    videoOn: Boolean = false,
+    /** 该端是否能真的出画面（目前只有 Web） */
+    videoSupported: Boolean = false,
+    /** 平台媒体层：把视频画面位置回传给浏览器/原生视图 */
+    mediaSession: im.client.call.MediaSession? = null,
+    onToggleVideo: () -> Unit = {},
 ) {
     val scheme = MaterialTheme.colorScheme
+    // 组合上下文里先取密度：onGloballyPositioned 的 lambda 不是 @Composable，
+    // 在那里 LocalDensity.current 会直接编译不过
+    val density = androidx.compose.ui.platform.LocalDensity.current
     // 三项里只有 Android 会真的变化；Web/桌面是常量（见各端 actual）
     val speakerOn by CallMediaExtras.speakerOn.collectAsState()
     val reconnecting by CallMediaExtras.reconnecting.collectAsState()
@@ -513,6 +532,37 @@ fun InCallOverlay(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.padding(horizontal = 24.dp),
             ) {
+                // 视频画面：Compose 画不了 <video>，这里只放占位，并在布局变化时
+                // 把位置回传给平台层（浏览器端据此摆放 DOM 视频层，与人机验证小组件同款做法）
+                // 只要该端能放视频就留出画面区域：对端随时可能打开摄像头，
+                // 不依赖「呼叫时是否声明视频」（信令里没有这个字段）
+                if (videoSupported && media == CallMediaState.Connected) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(220.dp)
+                            .clip(MaterialTheme.shapes.large)
+                            .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                            .onGloballyPositioned { coords ->
+                                val d = density.density
+                                val b = coords.boundsInWindow()
+                                mediaSession?.placeVideoSurfaces(
+                                    (b.left / d).toInt(), (b.top / d).toInt(),
+                                    (b.width / d).toInt(), (b.height / d).toInt(),
+                                    96,
+                                )
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+
                 Text(if (peer.isBlank()) "通话中" else "与 $peer 通话中", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
                 Text(status, style = MaterialTheme.typography.bodySmall, color = statusColor)
@@ -565,6 +615,15 @@ fun InCallOverlay(
                         enabled = media == CallMediaState.Connected,
                     ) {
                         Text(if (muted) "取消静音" else "静音")
+                    }
+                    // 摄像头开关：只有能出画面的平台才显示
+                    if (videoSupported) {
+                        FilledTonalButton(
+                            onClick = onToggleVideo,
+                            enabled = media == CallMediaState.Connected,
+                        ) {
+                            Text(if (videoOn) "关摄像头" else "开摄像头")
+                        }
                     }
                     Button(
                         onClick = onHangUp,
@@ -770,14 +829,32 @@ fun ChatScreen(client: ImClient, conversation: Conversation, modifier: Modifier 
                             // 从会话 ID 解析对端 UID：s_{uidA}_{uidB}
                             val uids = conversation.id.removePrefix("s_").split("_")
                             val peer = uids.firstOrNull { it != client.myUid }
-                            if (peer != null) client.callController.startCall(peer)
+                            // 语音通话：视频由对方或本方在通话中按需开启
+                            if (peer != null) client.callController.startCall(peer, video = false)
                         },
                     ) {
                         Text(
                             "📞",
                             style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.semantics { contentDescription = "发起通话" },
+                            modifier = Modifier.semantics { contentDescription = "语音通话" },
                         )
+                    }
+                    // 视频通话：只有能出画面的平台才显示。呼叫即开摄像头，
+                    // 对端接听后一旦订阅到视频轨就会渲染（信令里不带视频标记）
+                    if (client.callController.videoSupported) {
+                        IconButton(
+                            onClick = {
+                                val uids = conversation.id.removePrefix("s_").split("_")
+                                val peer = uids.firstOrNull { it != client.myUid }
+                                if (peer != null) client.callController.startCall(peer, video = true)
+                            },
+                        ) {
+                            Text(
+                                "📹",
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.semantics { contentDescription = "视频通话" },
+                            )
+                        }
                     }
                 }
             },
