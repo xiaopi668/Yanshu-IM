@@ -111,6 +111,11 @@ func main() {
 	mux.Handle("POST /v1/me/password", a.authed(a.changePassword))
 	mux.Handle("POST /v1/me/logout-others", a.authed(a.logoutOtherDevices))
 	mux.Handle("PUT /v1/me/email", a.authed(a.setEmail))
+	// 两步验证（TOTP）
+	mux.Handle("GET /v1/me/totp", a.authed(a.totpStatus))
+	mux.Handle("POST /v1/me/totp/setup", a.authed(a.totpSetup))
+	mux.Handle("POST /v1/me/totp/enable", a.authed(a.totpEnable))
+	mux.Handle("POST /v1/me/totp/disable", a.authed(a.totpDisable))
 	// 忘记密码：邮箱验证码重置（未登录可用）
 	mux.HandleFunc("POST /v1/password/reset", a.resetPassword)
 	// 二期：通讯录
@@ -413,6 +418,7 @@ func (a *apiv1) login(w http.ResponseWriter, r *http.Request) {
 		Password       string `json:"password"`
 		Platform       string `json:"platform"`
 		TurnstileToken string `json:"turnstile_token"`
+		TotpCode       string `json:"totp_code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, 400, err)
@@ -441,6 +447,21 @@ func (a *apiv1) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if !auth.CheckPassword(hash, req.Password) {
 		fail(w, 401, errors.New("bad credentials"))
+		return
+	}
+	// 第二因子：密码对了还不够。
+	// 注意顺序 —— 放在封禁检查之前，避免一个已开启 2FA 的封禁账号先暴露「封禁」状态。
+	// 两种失败都回 401（不区分「没填」与「填错」给外部），但带 totp_required 让客户端
+	// 把验证码输入框亮出来，而不是提示「密码错误」让用户去改密。
+	if ok, required, terr := a.verifyLoginTotp(r.Context(), uid, req.TotpCode); terr != nil {
+		fail(w, 500, terr)
+		return
+	} else if !ok {
+		msg := "需要两步验证验证码"
+		if strings.TrimSpace(req.TotpCode) != "" {
+			msg = "两步验证码不正确"
+		}
+		writeJSON(w, 401, map[string]any{"error": msg, "totp_required": required})
 		return
 	}
 	// 封禁检查 + 取当前令牌版本（新签发的 token 必须带上它，否则立即被中间件判为已撤销）

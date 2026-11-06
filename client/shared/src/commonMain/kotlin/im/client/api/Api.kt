@@ -5,6 +5,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -50,6 +51,8 @@ class Api(private val baseUrl: String) {
         password: String,
         platform: String,
         turnstileToken: String = "",
+        /** 账号开启两步验证时必填；服务端会在响应里用 totp_required 提示 */
+        totpCode: String = "",
     ): LoginResp {
         val body = json.encodeToString(
             mapOf(
@@ -57,9 +60,31 @@ class Api(private val baseUrl: String) {
                 "password" to password,
                 "platform" to platform,
                 "turnstile_token" to turnstileToken,
+                "totp_code" to totpCode,
             )
         )
         return request("POST", "/v1/login", body)
+    }
+
+    // ---------- 两步验证（TOTP） ----------
+
+    suspend fun totpStatus(token: String): TotpStatusResp =
+        request("GET", "/v1/me/totp", null, token)
+
+    suspend fun totpSetup(token: String): TotpSetupResp =
+        request("POST", "/v1/me/totp/setup", "{}", token)
+
+    /** 校验一次验证码并正式开启；返回一次性恢复码（只此一次） */
+    suspend fun totpEnable(token: String, code: String): List<String> {
+        val body = json.encodeToString(mapOf("code" to code))
+        val resp = request<TotpEnableResp>("POST", "/v1/me/totp/enable", body, token)
+        return resp.recovery_codes
+    }
+
+    /** 关闭两步验证：需要当前验证码或一个恢复码 */
+    suspend fun totpDisable(token: String, code: String) {
+        val body = json.encodeToString(mapOf("code" to code))
+        request<Map<String, Boolean>>("POST", "/v1/me/totp/disable", body, token)
     }
 
     suspend fun friends(token: String): List<FriendResp> =
@@ -330,6 +355,17 @@ class ApiException(
     val body: String = "",
 ) : Exception(message)
 
+/**
+ * 服务端是否因为「缺第二因子」而拒绝了这次登录。
+ *
+ * 用 JSON 解析而不是 body.contains("totp_required")：后者会被错误信息里的同名字样骗到，
+ * 也会在服务端调整字段顺序/空白时失效。
+ */
+fun ApiException.isTotpRequired(): Boolean = runCatching {
+    val obj = Json.parseToJsonElement(body).jsonObject
+    obj["totp_required"]?.jsonPrimitive?.booleanOrNull ?: false
+}.getOrDefault(false)
+
 /** 服务端错误响应体的标准形态是 {"error":"..."}；个别接口用 {"message":"..."} */
 @kotlinx.serialization.Serializable
 private data class ApiErrorBody(val error: String = "", val message: String = "")
@@ -405,6 +441,14 @@ data class GroupInfoResp(val id: String, val name: String, val owner_uid: String
 data class GroupMemberResp(val uid: String, val nickname: String)
 
 @Serializable
+data class TotpStatusResp(val enabled: Boolean = false, val recovery_left: Int = 0)
+
+@Serializable
+data class TotpSetupResp(val secret: String = "", val otpauth_url: String = "")
+
+@Serializable
+data class TotpEnableResp(val recovery_codes: List<String> = emptyList())
+
 data class ConversationHistoryMsg(
     val serverMsgId: String,
     val seq: Long,

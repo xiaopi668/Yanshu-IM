@@ -21,6 +21,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import im.client.ImClient
+import im.client.api.isTotpRequired
 import im.client.auth.OidcLoginResult
 import im.client.auth.SavedSession
 import im.client.auth.oidcLogin
@@ -59,6 +60,9 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
     // 用户只会反复点（然后吃到 429）。这里做成 60 秒倒计时，顺带给出明确预期。
     var codeCooldown by remember { mutableStateOf(0) }
     var showResetDialog by remember { mutableStateOf(false) }
+    // 两步验证：服务端用 totp_required 告诉我们「密码对了，还差第二因子」
+    var totpCode by remember { mutableStateOf("") }
+    var totpNeeded by remember { mutableStateOf(false) }
     LaunchedEffect(codeCooldown) {
         if (codeCooldown > 0) {
             delay(1000)
@@ -185,6 +189,23 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                         },
                     )
 
+                    // 两步验证：只有服务端说"密码对了、还差第二因子"时才出现，
+                    // 避免给没开 2FA 的用户多一个莫名其妙的输入框
+                    if (totpNeeded && !isRegister) {
+                        Spacer(Modifier.height(16.dp))
+                        AuthField(
+                            totpCode, { totpCode = it.filter { c -> c.isDigit() }.take(6) },
+                            "两步验证码（6 位）",
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "打开验证器 App（Google Authenticator / 1Password 等）读取当前 6 位验证码；" +
+                                "手机丢了可用一个恢复码代替",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
                     // 邮箱只在注册界面出现（服务端无论是否开验证码都会保存）；验证码相关只在站点开启后出现
                     if (isRegister && canRegister) {
                         Spacer(Modifier.height(16.dp))
@@ -286,12 +307,21 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                     val client = ImClient(apiBase.trimEnd('/'), wsBase)
                                     client.callController.livekitUrl = siteCfg?.livekit_url ?: ""
                                     client.wireCallbacks()
-                                    client.login(username, password, turnstileToken)
+                                    client.login(username, password, turnstileToken, totpCode.trim())
                                     client.startSession()
                                     saveSession(SavedSession(client.myToken, client.apiBaseUrl, client.gatewayWsUrl))
                                     onLoggedIn(client)
                                 } catch (e: Throwable) {
-                                    error = e.message ?: e.toString()
+                                    // 服务端在密码正确但缺第二因子时返回 401 + totp_required。
+                                    // 这里不能只说「密码错误」——用户会去改密码，越改越乱。
+                                    val apiErr = e as? im.client.api.ApiException
+                                    if (apiErr != null && apiErr.isTotpRequired()) {
+                                        totpNeeded = true
+                                        error = if (totpCode.isBlank()) "该账号已开启两步验证，请输入验证码"
+                                        else "验证码不正确，请重新输入"
+                                    } else {
+                                        error = e.message ?: e.toString()
+                                    }
                                 }
                                 busy = false
                             }

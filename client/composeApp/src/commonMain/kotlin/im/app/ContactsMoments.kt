@@ -550,6 +550,10 @@ fun ProfileDialog(
     // 账号安全子对话框
     var showPasswordDialog by remember { mutableStateOf(false) }
     var showEmailDialog by remember { mutableStateOf(false) }
+    // 两步验证
+    var totpEnabled by remember { mutableStateOf(false) }
+    var totpRecoveryLeft by remember { mutableStateOf(0) }
+    var showTotpDialog by remember { mutableStateOf(false) }
 
     var avatarKey by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
@@ -561,6 +565,11 @@ fun ProfileDialog(
             username = me.username
             yidChanged = me.yid_changed
             avatarKey = me.avatar
+            runCatching {
+                val st = client.api.totpStatus(client.myToken)
+                totpEnabled = st.enabled
+                totpRecoveryLeft = st.recovery_left
+            }
         } catch (_: Throwable) {}
     }
     val avatarKeyOrNull = avatarKey.ifBlank { null }
@@ -732,6 +741,33 @@ fun ProfileDialog(
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("修改邮箱") }
 
+                // ---------- 两步验证 ----------
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(16.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "两步验证（TOTP）",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            if (totpEnabled) {
+                                // 恢复码剩余数量对用户很重要：用完就再也救不回来了
+                                "已开启 · 剩余恢复码 $totpRecoveryLeft 个"
+                            } else {
+                                "未开启 · 登录时除密码外还需一次 6 位验证码"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    OutlinedButton(onClick = { showTotpDialog = true }) {
+                        Text(if (totpEnabled) "关闭" else "开启")
+                    }
+                }
+
                 msg?.let {
                     Spacer(Modifier.height(8.dp))
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
@@ -749,6 +785,29 @@ fun ProfileDialog(
                         onDismiss = { showEmailDialog = false },
                         onDone = { msg = it },
                     )
+                }
+                if (showTotpDialog) {
+                    if (totpEnabled) {
+                        TotpDisableDialog(
+                            client = client,
+                            onDismiss = { showTotpDialog = false },
+                            onDone = { m ->
+                                totpEnabled = false
+                                totpRecoveryLeft = 0
+                                msg = m
+                            },
+                        )
+                    } else {
+                        TotpSetupDialog(
+                            client = client,
+                            onDismiss = { showTotpDialog = false },
+                            onDone = { m, left ->
+                                totpEnabled = true
+                                totpRecoveryLeft = left
+                                msg = m
+                            },
+                        )
+                    }
                 }
             }
         },
@@ -1139,6 +1198,200 @@ fun ChangeEmailDialog(
                     }
                 },
             ) { Text(if (busy) "提交中…" else "保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") } },
+    )
+}
+
+
+
+// ============ 两步验证（TOTP）============
+
+/**
+ * 开启两步验证：取密钥 → 用户把密钥录进验证器 → 提交一次验证码确认 → 展示恢复码。
+ *
+ * 中间那一步「用验证码确认」不能省：扫完码就关页面的话，用户会把自己锁在门外。
+ * 恢复码只展示这一次，库里存的是哈希 —— 所以要说清楚「现在就存好」。
+ */
+@Composable
+fun TotpSetupDialog(
+    client: ImClient,
+    onDismiss: () -> Unit,
+    onDone: (message: String, recoveryLeft: Int) -> Unit,
+) {
+    var secret by remember { mutableStateOf("") }
+    var otpauth by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var recovery by remember { mutableStateOf<List<String>>(emptyList()) }
+    var err by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        busy = true
+        try {
+            val s = client.api.totpSetup(client.myToken)
+            secret = s.secret
+            otpauth = s.otpauth_url
+        } catch (e: Throwable) {
+            err = e.message ?: e.toString()
+        } finally {
+            busy = false
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text(if (recovery.isEmpty()) "开启两步验证" else "请保存恢复码") },
+        text = {
+            Column {
+                if (recovery.isEmpty()) {
+                    Text(
+                        "1. 在验证器 App（Google Authenticator / 1Password / Microsoft Authenticator）里手动输入下面的密钥",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            if (secret.isBlank()) "生成中…" else secret.chunked(4).joinToString(" "),
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.padding(12.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "2. 填入验证器显示的 6 位验证码以确认绑定",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        code, { code = it.filter { c -> c.isDigit() }.take(6) },
+                        label = { Text("6 位验证码") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "otpauth 地址（可复制到支持导入的 App）：$otpauth",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "这些恢复码只显示这一次。手机丢失时用它们登录，每个只能用一次，请现在保存好。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            recovery.chunked(2).forEach { row ->
+                                Text(
+                                    row.joinToString("    "),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            }
+                        }
+                    }
+                }
+                err?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy,
+                onClick = {
+                    if (recovery.isNotEmpty()) {
+                        onDone("两步验证已开启", recovery.size)
+                        onDismiss()
+                        return@TextButton
+                    }
+                    if (code.length != 6) {
+                        err = "请输入 6 位验证码"
+                        return@TextButton
+                    }
+                    busy = true
+                    scope.launch {
+                        try {
+                            recovery = client.api.totpEnable(client.myToken, code)
+                            err = null
+                        } catch (e: Throwable) {
+                            err = e.message ?: e.toString()
+                        } finally {
+                            busy = false
+                        }
+                    }
+                },
+            ) { Text(if (recovery.isEmpty()) (if (busy) "提交中…" else "确认开启") else "我已保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text(if (recovery.isEmpty()) "取消" else "关闭") }
+        },
+    )
+}
+
+/** 关闭两步验证：需要当前验证码或一个恢复码 */
+@Composable
+fun TotpDisableDialog(
+    client: ImClient,
+    onDismiss: () -> Unit,
+    onDone: (message: String) -> Unit,
+) {
+    var code by remember { mutableStateOf("") }
+    var err by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("关闭两步验证") },
+        text = {
+            Column {
+                Text(
+                    "关闭后登录只需要密码。请输入当前验证码，或用任意一个恢复码确认。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    code, { code = it.trim() },
+                    label = { Text("验证码或恢复码") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                err?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy && code.isNotBlank(),
+                onClick = {
+                    busy = true
+                    scope.launch {
+                        try {
+                            client.api.totpDisable(client.myToken, code.trim())
+                            onDone("两步验证已关闭")
+                            onDismiss()
+                        } catch (e: Throwable) {
+                            err = e.message ?: e.toString()
+                        } finally {
+                            busy = false
+                        }
+                    }
+                },
+            ) { Text(if (busy) "提交中…" else "关闭") }
         },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") } },
     )

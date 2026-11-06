@@ -161,3 +161,21 @@ CREATE TABLE IF NOT EXISTS `archive_log` (
   `created_at`  BIGINT      NOT NULL,
   PRIMARY KEY (`day`, `conversation_id`)
 ) ENGINE=InnoDB;
+
+-- ---------- 两步验证（TOTP） ----------
+-- 一人一行；enabled=0 表示「已生成密钥但还没用验证码确认绑定」
+CREATE TABLE IF NOT EXISTS `user_totp` (
+  `uid`        VARCHAR(32) NOT NULL,
+  `secret`     VARCHAR(64) NOT NULL,   -- base32（无填充）
+  `enabled`    TINYINT     NOT NULL DEFAULT 0,
+  `created_at` BIGINT      NOT NULL,
+  PRIMARY KEY (`uid`)
+) ENGINE=InnoDB;
+
+-- 一次性恢复码：手机丢了靠它登录。只存 SHA-256，used_at 非空即已用过
+CREATE TABLE IF NOT EXISTS `user_totp_recovery` (
+  `uid`       VARCHAR(32) NOT NULL,
+  `code_hash` CHAR(64)    NOT NULL,
+  `used_at`   BIGINT      NULL,
+  PRIMARY KEY (`uid`, `code_hash`)
+) ENGINE=InnoDB;

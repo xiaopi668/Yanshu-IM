@@ -86,8 +86,13 @@ class ImClient(
         return me.uid
     }
 
-    suspend fun login(username: String, password: String, turnstileToken: String = ""): Pair<String, String> {
-        val resp = api.login(username, password, platformOf(), turnstileToken)
+    suspend fun login(
+        username: String,
+        password: String,
+        turnstileToken: String = "",
+        totpCode: String = "",
+    ): Pair<String, String> {
+        val resp = api.login(username, password, platformOf(), turnstileToken, totpCode)
         myUid = resp.uid
         myToken = resp.token
         bindCacheOwner(resp.uid)

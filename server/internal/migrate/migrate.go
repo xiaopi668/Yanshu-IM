@@ -41,6 +41,17 @@ var statements = []string{
 	  WHERE attachment_key IS NULL AND attachment LIKE '%/v1/download?key=%'`,
 	// 令牌版本：支持「改密/重置/封禁后旧 JWT 立即失效」
 	`ALTER TABLE user_state ADD COLUMN token_version BIGINT NOT NULL DEFAULT 0`,
+	// 两步验证（TOTP）：老库补表（新部署由 schema.sql 建全）
+	`CREATE TABLE IF NOT EXISTS user_totp(
+		uid VARCHAR(32) NOT NULL PRIMARY KEY,
+		secret VARCHAR(64) NOT NULL,
+		enabled TINYINT NOT NULL DEFAULT 0,
+		created_at BIGINT NOT NULL) ENGINE=InnoDB`,
+	`CREATE TABLE IF NOT EXISTS user_totp_recovery(
+		uid VARCHAR(32) NOT NULL,
+		code_hash CHAR(64) NOT NULL,
+		used_at BIGINT NULL,
+		PRIMARY KEY(uid, code_hash)) ENGINE=InnoDB`,
 }
 
 const lockName = "im:schema_migrate"
