@@ -35,9 +35,9 @@ type passkeyUser struct {
 }
 
 func (u *passkeyUser) WebAuthnID() []byte                         { return []byte(u.uid) }
-func (u *passkeyUser) WebAuthnName() string                        { return u.name }
-func (u *passkeyUser) WebAuthnDisplayName() string                 { return u.name }
-func (u *passkeyUser) WebAuthnCredentials() []webauthn.Credential  { return u.credentials }
+func (u *passkeyUser) WebAuthnName() string                       { return u.name }
+func (u *passkeyUser) WebAuthnDisplayName() string                { return u.name }
+func (u *passkeyUser) WebAuthnCredentials() []webauthn.Credential { return u.credentials }
 
 // webauthnFor 按配置构造 WebAuthn 实例。未配置 RP 时返回 nil（功能关闭）。
 //
