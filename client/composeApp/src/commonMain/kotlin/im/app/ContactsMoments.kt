@@ -554,8 +554,13 @@ fun ProfileDialog(
     var totpEnabled by remember { mutableStateOf(false) }
     var totpRecoveryLeft by remember { mutableStateOf(0) }
     var showTotpDialog by remember { mutableStateOf(false) }
+    // 通行密钥
+    var passkeys by remember { mutableStateOf<List<im.client.api.PasskeyInfo>>(emptyList()) }
+    val passkeyOk = remember { runCatching { im.client.passkey.passkeyPlatform().supported }.getOrDefault(false) }
 
     var avatarKey by remember { mutableStateOf("") }
+    // 通行密钥绑定/删除是异步的，按钮需要 loading 态（避免连点重复注册）
+    var busy by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         try {
             val me = client.api.me(client.myToken)
@@ -570,6 +575,7 @@ fun ProfileDialog(
                 totpEnabled = st.enabled
                 totpRecoveryLeft = st.recovery_left
             }
+            runCatching { passkeys = client.api.passkeyList(client.myToken) }
         } catch (_: Throwable) {}
     }
     val avatarKeyOrNull = avatarKey.ifBlank { null }
@@ -786,6 +792,73 @@ fun ProfileDialog(
                         onDone = { msg = it },
                     )
                 }
+                // ---------- 通行密钥 ----------
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(16.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "通行密钥（Passkey）",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            when {
+                                !passkeyOk -> "当前平台不支持（请用浏览器登录后绑定）"
+                                passkeys.isEmpty() -> "未绑定 · 可用指纹/面容/设备 PIN 免密登录"
+                                else -> "已绑定 $passkeys.size 个"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    OutlinedButton(
+                        enabled = passkeyOk && !busy,
+                        onClick = {
+                            busy = true
+                            scope.launch {
+                                try {
+                                    val api = client.api
+                                    val optionsJson = api.passkeyBegin(client.myToken)
+                                    val cred = im.client.passkey.passkeyPlatform()
+                                        .create(optionsJson)
+                                        .getOrElse { e -> throw e }
+                                    // 标签用平台名不好拿，就让用户后面自己认；这里给个默认
+                                    api.passkeyFinish(client.myToken, cred, "我的设备")
+                                    passkeys = api.passkeyList(client.myToken)
+                                    msg = "通行密钥已绑定"
+                                } catch (e: Throwable) {
+                                    msg = e.message ?: e.toString()
+                                } finally {
+                                    busy = false
+                                }
+                            }
+                        },
+                    ) { Text("绑定") }
+                }
+                // 已绑定的凭据：允许逐个删除（丢了设备时用）
+                passkeys.forEach { pk ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            (pk.label.ifBlank { "通行密钥" }) + " · " + pk.id.take(10) + "…",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(
+                            onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        client.api.passkeyDelete(client.myToken, pk.id)
+                                        passkeys = client.api.passkeyList(client.myToken)
+                                        msg = "已删除该通行密钥"
+                                    }.onFailure { msg = it.message ?: it.toString() }
+                                }
+                            },
+                        ) { Text("删除") }
+                    }
+                }
+
                 if (showTotpDialog) {
                     if (totpEnabled) {
                         TotpDisableDialog(

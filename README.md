@@ -14,6 +14,9 @@
 - 注册 / 登录（bcrypt + JWT）、多端在线
 - **两步验证（TOTP）**：验证器 App 绑定（otpauth 地址 + 手动密钥）、10 个一次性恢复码、
   登录第二因子校验；关闭需当前验证码或恢复码。恢复码只存 SHA-256、用后即废
+- **通行密钥（Passkey / WebAuthn）**：指纹/面容/设备 PIN 免密登录，支持无用户名（discoverable）流程与多凭据管理。
+  **Web 端已实现**；Android 需 Credential Manager + Digital Asset Links、桌面无系统级 WebAuthn API，
+  两端当前如实提示不支持
 - 单聊、群聊（写扩散）、消息可靠投递（会话 seq + ACK + 离线拉补）
 - 多媒体消息：图片 / 文件 / 语音 / 视频（预签名直传）
 - 1v1 语音通话（自托管 LiveKit SFU + 内嵌 TURN）：信令状态机 + LiveKit token 签发 + **Web 端媒体面已接通**
@@ -297,6 +300,33 @@ OIDC 的 `redirect_uri` 默认必须等于 `{base}/v1/oidc/{name}/callback`；�
 
 接口：`GET /v1/me/totp`、`POST /v1/me/totp/setup`、`POST /v1/me/totp/enable`、`POST /v1/me/totp/disable`；
 登录接口增加可选字段 `totp_code`。
+
+## 通行密钥（Passkey）
+
+先配好站点对外地址（**必需**，WebAuthn 的 RP ID / origin 与它绑定）：
+
+```bash
+IM_PUBLIC_BASE_URL=https://im.example.com   # 决定 RP ID=im.example.com、origin=https://im.example.com
+# 反代/多域名时显式覆盖：
+# IM_WEBAUTHN_RP_ID=im.example.com
+# IM_WEBAUTHN_ORIGINS=https://im.example.com,https://im.example.org
+# IM_WEBAUTHN_RP_NAME=雁书
+```
+
+然后在「我的资料 → 通行密钥」里点「绑定」，用系统弹窗完成指纹/面容验证。登录页会出现
+「使用通行密钥登录」——这是**无用户名**流程，不用先填账号，验证器自己挑凭据。
+
+实现要点：
+
+- 用 [`go-webauthn`](https://github.com/go-webauthn/webauthn) 做协议校验（CBOR / COSE / 签名 / origin / 计数器）。
+  这部分**不适合手写**，任何一处写错都是「看起来能用、实际可绕过」
+- 挑战（challenge）存 Redis、5 分钟过期、**取一次就删**（防重放）
+- 凭据整体以 JSON 落库（`user_passkey.credential_json`），库升级不用改表
+- 通行密钥本身是「持有设备 + 生物识别/PIN」的双因子，用它登录时不再要求 TOTP
+
+**配置错了会怎样**：浏览器直接抛 `SecurityError`，且不会告诉你是哪个字段 ——
+常见原因是 `IM_PUBLIC_BASE_URL` 还是 http（反代后是 https）、或用了 IP 而不是域名。
+桌面/Android 客户端当前不支持绑定，请用浏览器登录后绑定，然后在其他端用账号密码登录。
 
 ## 测试
 

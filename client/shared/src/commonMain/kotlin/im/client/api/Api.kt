@@ -81,6 +81,49 @@ class Api(private val baseUrl: String) {
         return resp.recovery_codes
     }
 
+    // ---------- 通行密钥（WebAuthn） ----------
+
+    /**
+     * 绑定：开始注册仪式，返回服务端原样的 options JSON（含 publicKey）。
+     * 调用方把它交给平台层 navigator.credentials.create。
+     */
+    suspend fun passkeyBegin(token: String): String =
+        rawRequest("POST", "/v1/me/passkey/begin", "{}", token)
+
+    /**
+     * 绑定：提交浏览器产出的 credential JSON。
+     * 注意是**原样 JSON 作为请求体**（服务端用 WebAuthn 库解析），不做二次包装。
+     */
+    suspend fun passkeyFinish(token: String, credentialJson: String, label: String = ""): Boolean {
+        rawRequest(
+            "POST",
+            "/v1/me/passkey/finish?label=" + urlEncode(label),
+            credentialJson,
+            token,
+        )
+        return true
+    }
+
+    suspend fun passkeyList(token: String): List<PasskeyInfo> =
+        request("GET", "/v1/me/passkey", null, token)
+
+    suspend fun passkeyDelete(token: String, id: String) {
+        request<Map<String, Boolean>>("DELETE", "/v1/me/passkey/" + urlEncode(id), null, token)
+    }
+
+    /** 登录：开始无用户名（discoverable）断言，返回 {options, session_id} */
+    suspend fun passkeyLoginBegin(): PasskeyLoginBeginResp =
+        request("POST", "/v1/passkey/login/begin", "{}", null)
+
+    /** 登录：提交断言 JSON，换取令牌 */
+    suspend fun passkeyLoginFinish(sessionId: String, credentialJson: String): LoginResp =
+        request(
+            "POST",
+            "/v1/passkey/login/finish?session_id=" + urlEncode(sessionId),
+            credentialJson,
+            null,
+        )
+
     /** 关闭两步验证：需要当前验证码或一个恢复码 */
     suspend fun totpDisable(token: String, code: String) {
         val body = json.encodeToString(mapOf("code" to code))
@@ -439,6 +482,21 @@ data class GroupInfoResp(val id: String, val name: String, val owner_uid: String
 
 @Serializable
 data class GroupMemberResp(val uid: String, val nickname: String)
+
+@Serializable
+data class PasskeyInfo(
+    val id: String = "",
+    val label: String = "",
+    val created_at: Long = 0,
+    val last_used_at: Long = 0,
+)
+
+@Serializable
+data class PasskeyLoginBeginResp(
+    /** 服务端原样的断言 options（含 publicKey），直接交给平台层 */
+    val options: kotlinx.serialization.json.JsonElement? = null,
+    val session_id: String = "",
+)
 
 @Serializable
 data class TotpStatusResp(val enabled: Boolean = false, val recovery_left: Int = 0)

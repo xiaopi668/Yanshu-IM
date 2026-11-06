@@ -116,6 +116,13 @@ func main() {
 	mux.Handle("POST /v1/me/totp/setup", a.authed(a.totpSetup))
 	mux.Handle("POST /v1/me/totp/enable", a.authed(a.totpEnable))
 	mux.Handle("POST /v1/me/totp/disable", a.authed(a.totpDisable))
+	// 通行密钥（WebAuthn）：绑定需要登录态；登录是公开接口
+	mux.Handle("POST /v1/me/passkey/begin", a.authed(a.passkeyBegin))
+	mux.Handle("POST /v1/me/passkey/finish", a.authed(a.passkeyFinish))
+	mux.Handle("GET /v1/me/passkey", a.authed(a.passkeyList))
+	mux.Handle("DELETE /v1/me/passkey/{id}", a.authed(a.passkeyDelete))
+	mux.HandleFunc("POST /v1/passkey/login/begin", a.passkeyLoginBegin)
+	mux.HandleFunc("POST /v1/passkey/login/finish", a.passkeyLoginFinish)
 	// 忘记密码：邮箱验证码重置（未登录可用）
 	mux.HandleFunc("POST /v1/password/reset", a.resetPassword)
 	// 二期：通讯录

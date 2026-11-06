@@ -181,6 +181,8 @@ data class SiteConfigResp(
     val oidc_providers: List<OidcProviderInfo> = emptyList(),
     /** LiveKit SFU 地址（wss://…）。为空表示服务端没配，通话不可用 */
     val livekit_url: String = "",
+    /** 通行密钥是否可用（服务端配了 RP ID） */
+    val passkey_enabled: Boolean = false,
 )
 
 @kotlinx.serialization.Serializable

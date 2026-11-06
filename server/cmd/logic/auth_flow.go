@@ -60,6 +60,9 @@ func (a *apiv1) publicSiteConfig(w http.ResponseWriter, r *http.Request) {
 		// 通话媒体面（LiveKit SFU）的连接地址。不是密钥：客户端拿到它 + room token 才能入会。
 		// 站点是 HTTPS 时必须配成 wss://，否则浏览器按混合内容拦掉。
 		"livekit_url": a.cfg.LiveKitHost,
+		// 通行密钥是否可用：客户端据此决定要不要显示「使用通行密钥登录」。
+		// 未配置 RP 时后端各接口会返回 503，但最好一开始就别给入口。
+		"passkey_enabled": a.cfg.WebauthnRPID != "",
 	})
 }
 

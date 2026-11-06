@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -39,6 +40,14 @@ type Config struct {
 	// 站点对外地址（如 https://im.example.com）。
 	// 设置后为权威值：OIDC redirect_uri 校验以它为准，忽略 X-Forwarded-Host。
 	PublicBaseURL string
+	// ---------- 通行密钥（WebAuthn） ----------
+	// RPID 是域名（不含 scheme/端口），浏览器会拿它和当前页面域名比对，不一致直接 SecurityError。
+	// 默认从 PublicBaseURL 推导；两者都为空 = 功能关闭（/v1/site-config 会告知客户端）。
+	WebauthnRPID string
+	// RPOrigins 是允许的浏览器 origin（含 scheme，必要时含端口）。
+	WebauthnOrigins []string
+	// RPDisplayName 是验证器弹窗里显示的服务名
+	WebauthnDisplayName string
 	// 允许的跨源来源（逗号分隔）。为空时 CORS 放行 *、WS 校验回落到"同 Host 或无 Origin"。
 	AllowedOrigins []string
 	// OIDC 登录成功后允许的回跳目标白名单（逗号分隔的**前缀**），用于「浏览器授权完自动把令牌交回客户端」：
@@ -86,8 +95,13 @@ func Load() *Config {
 		LiveKitAPIKey:    fromEnv("IM_LIVEKIT_API_KEY", "devkey"),
 		LiveKitAPISecret: fromEnv("IM_LIVEKIT_API_SECRET", DefaultLiveKitSecret),
 
-		PublicBaseURL:       strings.TrimRight(os.Getenv("IM_PUBLIC_BASE_URL"), "/"),
-		AllowedOrigins:      splitList(os.Getenv("IM_ALLOWED_ORIGINS")),
+		PublicBaseURL:  strings.TrimRight(os.Getenv("IM_PUBLIC_BASE_URL"), "/"),
+		AllowedOrigins: splitList(os.Getenv("IM_ALLOWED_ORIGINS")),
+		// 通行密钥：RPID/Origins 默认从站点对外地址推导（自托管通常只有一个域名）。
+		// 显式配置优先 —— 用 IP 访问、或前后端不同域时，推导值会让浏览器直接拒绝。
+		WebauthnRPID:        fromEnv("IM_WEBAUTHN_RP_ID", hostOf(strings.TrimRight(os.Getenv("IM_PUBLIC_BASE_URL"), "/"))),
+		WebauthnOrigins:     webauthnOrigins(os.Getenv("IM_PUBLIC_BASE_URL"), os.Getenv("IM_WEBAUTHN_ORIGINS")),
+		WebauthnDisplayName: fromEnv("IM_WEBAUTHN_RP_NAME", "雁书"),
 		OIDCReturnAllowlist: splitList(os.Getenv("IM_OIDC_RETURN_ALLOWLIST")),
 		TrustProxy:          os.Getenv("IM_TRUST_PROXY") == "true",
 		RequireStrongSecrets: os.Getenv("IM_REQUIRE_STRONG_SECRETS") == "true" ||
@@ -208,4 +222,32 @@ func (c *Config) OriginAllowed(origin string) bool {
 		}
 	}
 	return false
+}
+
+// hostOf 从 URL 里取主机名（RP ID 不能带 scheme/端口）
+func hostOf(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host := u.Hostname()
+	return host
+}
+
+// webauthnOrigins 决定允许的 origin 列表：显式配置优先，否则用站点对外地址。
+//
+// 注意 origin 必须与浏览器地址栏一致（scheme + host + 非默认端口）。
+// 自托管常见的坑：http 反代到 https 之后忘了改 IM_PUBLIC_BASE_URL，导致 origin 不匹配。
+func webauthnOrigins(base, explicit string) []string {
+	if v := splitList(explicit); len(v) > 0 {
+		return v
+	}
+	base = strings.TrimRight(base, "/")
+	if base == "" {
+		return nil
+	}
+	return []string{base}
 }

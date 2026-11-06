@@ -179,3 +179,17 @@ CREATE TABLE IF NOT EXISTS `user_totp_recovery` (
   `used_at`   BIGINT      NULL,
   PRIMARY KEY (`uid`, `code_hash`)
 ) ENGINE=InnoDB;
+
+-- ---------- 通行密钥（WebAuthn / Passkey） ----------
+-- credential_json 直接存 go-webauthn 的 Credential 结构（JSON），
+-- 避免把 attestation/公钥/计数器等字段逐个映射 —— 库升级时不用改表。
+CREATE TABLE IF NOT EXISTS `user_passkey` (
+  `credential_id`   VARBINARY(255) NOT NULL,   -- raw id（base64url 只在 API 层出现）
+  `uid`             VARCHAR(32)    NOT NULL,
+  `credential_json` MEDIUMTEXT     NOT NULL,
+  `label`           VARCHAR(64)    NOT NULL DEFAULT '',
+  `created_at`      BIGINT         NOT NULL,
+  `last_used_at`    BIGINT         NULL,
+  PRIMARY KEY (`credential_id`),
+  KEY `idx_passkey_uid` (`uid`)
+) ENGINE=InnoDB;

@@ -63,6 +63,8 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
     // 两步验证：服务端用 totp_required 告诉我们「密码对了，还差第二因子」
     var totpCode by remember { mutableStateOf("") }
     var totpNeeded by remember { mutableStateOf(false) }
+    // 平台是否支持通行密钥（Web 有实现；Android/桌面暂时 false）
+    val passkeyOk = remember { runCatching { im.client.passkey.passkeyPlatform().supported }.getOrDefault(false) }
     LaunchedEffect(codeCooldown) {
         if (codeCooldown > 0) {
             delay(1000)
@@ -329,6 +331,48 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                         modifier = Modifier.fillMaxWidth(),
                         shape = CircleShape,
                     ) { Text(if (busy) "登录中…" else "登录", style = MaterialTheme.typography.titleSmall) }
+
+                    // 通行密钥登录：只在「服务端配了 RP + 当前平台支持」时出现。
+                    // 这是无用户名（discoverable）流程：不用先填账号，验证器自己挑凭据。
+                    if (!isRegister && siteCfg?.passkey_enabled == true && passkeyOk) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            enabled = !busy,
+                            onClick = {
+                                busy = true; error = null; tip = null
+                                scope.launch {
+                                    try {
+                                        val api = im.client.api.Api(apiBase.trimEnd('/'))
+                                        val begin = api.passkeyLoginBegin()
+                                        val optionsJson = begin.options?.toString() ?: ""
+                                        if (optionsJson.isBlank()) {
+                                            error = "服务端未返回通行密钥选项"
+                                            return@launch
+                                        }
+                                        val cred = im.client.passkey.passkeyPlatform().get(optionsJson)
+                                            .getOrElse { e ->
+                                                error = e.message ?: "通行密钥验证失败"
+                                                return@launch
+                                            }
+                                        val resp = api.passkeyLoginFinish(begin.session_id, cred)
+                                        val c = ImClient(apiBase.trimEnd('/'), wsBase)
+                                        c.callController.livekitUrl = siteCfg?.livekit_url ?: ""
+                                        c.wireCallbacks()
+                                        c.loginWithToken(resp.token)
+                                        c.startSession()
+                                        saveSession(SavedSession(c.myToken, c.apiBaseUrl, c.gatewayWsUrl))
+                                        onLoggedIn(c)
+                                    } catch (e: Throwable) {
+                                        error = e.message ?: e.toString()
+                                    } finally {
+                                        busy = false
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = CircleShape,
+                        ) { Text("使用通行密钥登录", style = MaterialTheme.typography.titleSmall) }
+                    }
 
                     // 忘记密码：站点没开邮箱服务时没有任何可自助的通道，
                     // 直接说明「找管理员」，比给一个点了就报错的入口好

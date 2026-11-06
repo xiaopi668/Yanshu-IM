@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"encoding/base64"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -52,4 +54,19 @@ func ParseToken(secret, tokenStr string) (*Claims, error) {
 		return nil, errors.New("invalid token")
 	}
 	return c, nil
+}
+
+// Base64URL 编码为 URL 安全、无填充的形式（WebAuthn credential id 的标准表示）
+func Base64URL(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+
+// Base64URLDecode 解析 base64url（容忍填充）
+func Base64URLDecode(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, errors.New("empty")
+	}
+	if b, err := base64.RawURLEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	return base64.URLEncoding.DecodeString(s)
 }
