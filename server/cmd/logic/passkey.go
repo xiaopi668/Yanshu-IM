@@ -119,9 +119,14 @@ func (a *apiv1) passkeyBegin(w http.ResponseWriter, r *http.Request, uid string)
 	}
 	creation, session, err := wa.BeginRegistration(u,
 		webauthn.WithExclusions(webauthn.Credentials(u.credentials).CredentialDescriptors()),
-		webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementPreferred),
+		// **Must be required，不能是 preferred**：preferred 允许认证器把凭据存成
+		// 「服务端凭据」（非 discoverable），那样无用户名登录时浏览器根本找不到它，
+		// 表现就是「明明绑定成功，登录却说未找到此应用程序的通行密钥」。
+		// 通行密钥（passkey）的定义就是 discoverable + 用户验证，这里不能退让。
+		webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired),
 		webauthn.WithAuthenticatorSelection(protocol.AuthenticatorSelection{
-			UserVerification: protocol.VerificationPreferred,
+			ResidentKey:      protocol.ResidentKeyRequirementRequired,
+			UserVerification: protocol.VerificationRequired,
 		}),
 	)
 	if err != nil {
@@ -231,9 +236,37 @@ func (a *apiv1) passkeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, errors.New("本站未配置通行密钥"))
 		return
 	}
-	assertion, session, err := wa.BeginDiscoverableLogin(
-		webauthn.WithUserVerification(protocol.VerificationPreferred),
+	// 两种流程：
+	// - 不填用户名 → discoverable（认证器自己挑凭据），需要凭据是 resident；
+	// - 填了用户名 → allowCredentials，能把**早期用 preferred 建的非 resident 凭据**也救回来。
+	var req struct {
+		Username string `json:"username"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	var (
+		assertion *protocol.CredentialAssertion
+		session   *webauthn.SessionData
+		err       error
 	)
+	if name := strings.TrimSpace(req.Username); name != "" {
+		uid, _, lerr := a.lookupLoginUser(name)
+		if lerr != nil {
+			fail(w, 401, errors.New("未找到该账号的通行密钥"))
+			return
+		}
+		u, lerr := a.loadPasskeyUser(r.Context(), uid)
+		if lerr != nil || len(u.credentials) == 0 {
+			fail(w, 401, errors.New("该账号还没有绑定通行密钥"))
+			return
+		}
+		assertion, session, err = wa.BeginLogin(u,
+			webauthn.WithUserVerification(protocol.VerificationRequired),
+		)
+	} else {
+		assertion, session, err = wa.BeginDiscoverableLogin(
+			webauthn.WithUserVerification(protocol.VerificationRequired),
+		)
+	}
 	if err != nil {
 		fail(w, 500, err)
 		return

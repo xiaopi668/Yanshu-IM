@@ -111,9 +111,16 @@ class Api(private val baseUrl: String) {
         request<Map<String, Boolean>>("DELETE", "/v1/me/passkey/" + urlEncode(id), null, token)
     }
 
-    /** 登录：开始无用户名（discoverable）断言，返回 {options, session_id} */
-    suspend fun passkeyLoginBegin(): PasskeyLoginBeginResp =
-        request("POST", "/v1/passkey/login/begin", "{}", null)
+    /**
+     * 登录：开始断言，返回 {options, session_id}。
+     *
+     * [username] 非空时走 allowCredentials 流程（服务端下发该账号的凭据列表）——
+     * 这条路能兼容早期被存成「非 discoverable」的凭据；留空则是无用户名流程。
+     */
+    suspend fun passkeyLoginBegin(username: String = ""): PasskeyLoginBeginResp {
+        val body = json.encodeToString(mapOf("username" to username))
+        return request("POST", "/v1/passkey/login/begin", body, null)
+    }
 
     /** 登录：提交断言 JSON，换取令牌 */
     suspend fun passkeyLoginFinish(sessionId: String, credentialJson: String): LoginResp =

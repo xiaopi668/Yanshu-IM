@@ -343,7 +343,8 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                 scope.launch {
                                     try {
                                         val api = im.client.api.Api(apiBase.trimEnd('/'))
-                                        val begin = api.passkeyLoginBegin()
+                                        // 用户填了账号就走 allowCredentials，没填才用 discoverable
+                                        val begin = api.passkeyLoginBegin(username.trim())
                                         val optionsJson = begin.options?.toString() ?: ""
                                         if (optionsJson.isBlank()) {
                                             error = "服务端未返回通行密钥选项"
