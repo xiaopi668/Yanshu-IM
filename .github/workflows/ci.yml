@@ -148,14 +148,45 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
+    # 推镜像到 GitHub Container Registry 需要 packages:write；
+    # 其它 job 一律不给这个权限（最小权限原则）
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
+
       - name: 构建服务端镜像
         run: |
           docker build \
             --build-arg VERSION=$(git rev-parse --short HEAD) \
             -t im-server:ci \
             -f server/deploy/Dockerfile server
+
+      # 之前这里只 build 不 push：镜像留在 runner 上，run 一结束就没了，
+      # 想部署只能自己本地构建 —— 也就是「服务端没有可下载产物」的根因。
+      # 现在推两套标签：
+      #   sha-<短哈希>  可复现、可与提交一一对应，回滚时直接拉这一个
+      #   latest        只在 main 上更新，方便 compose 里写固定名字
+      - name: 登录 GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 推送镜像
+        if: github.event_name == 'push'
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/yanshu-im-server
+          SHA=$(git rev-parse --short HEAD)
+          docker tag im-server:ci "$IMAGE:sha-$SHA"
+          docker push "$IMAGE:sha-$SHA"
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            docker tag im-server:ci "$IMAGE:latest"
+            docker push "$IMAGE:latest"
+          fi
 
   # 端到端：真起 MySQL/Redis/MinIO + 三进程，跑客户端的 5 个 E2E 用例。
   # 这一层是本地验证过、但此前完全没有自动化的部分（协议、投递、封禁、撤销都靠它兜底）。
@@ -277,4 +308,3 @@ jobs:
         if: failure()
         run: |
           tail -50 /tmp/logic.log /tmp/gateway.log /tmp/admin.log || true
-
