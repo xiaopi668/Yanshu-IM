@@ -26,6 +26,17 @@ class MainActivity : ComponentActivity() {
             CallPermissions.onResult(granted)
         }
 
+    /** 恢复码「保存到…」：SAF 建文档，结果回给 shared 层写内容 */
+    private var pendingSaveName: String? = null
+    private var pendingSaveCallback: ((android.net.Uri?) -> Unit)? = null
+    private val createDocLauncher =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+            val cb = pendingSaveCallback
+            pendingSaveCallback = null
+            pendingSaveName = null
+            cb?.invoke(uri)
+        }
+
     /** POST_NOTIFICATIONS（Android 13+）：只影响「正在通话」通知条，不影响通话本身 */
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -52,6 +63,13 @@ class MainActivity : ComponentActivity() {
         CallPermissions.launch = { perm -> onMain { micPermissionLauncher.launch(perm) } }
         CallPermissions.shouldShowRationale = { perm -> shouldShowRequestPermissionRationale(perm) }
         CallPermissions.notifications = { perm -> onMain { notificationPermissionLauncher.launch(perm) } }
+        // 恢复码导出：打印要 Context，保存要 Activity 的 launcher
+        im.client.totp.AndroidRecoveryExport.appContext = applicationContext
+        im.client.totp.AndroidRecoveryExport.launcher = { name, onPicked ->
+            pendingSaveCallback = onPicked
+            pendingSaveName = name
+            onMain { createDocLauncher.launch(name) }
+        }
         // OIDC 回调：App 被回收后由 yanshu:// deep link 冷启动，令牌就在这个 Intent 里
         AndroidOidc.onUri(intent?.data)
         // Material 3 要求 edge-to-edge：内容画到系统栏后面，由 Scaffold 的

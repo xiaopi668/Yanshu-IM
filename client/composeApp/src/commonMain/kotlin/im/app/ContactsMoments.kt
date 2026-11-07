@@ -24,6 +24,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.AnnotatedString
+import im.client.totp.recoveryCodesAsText
+import im.client.totp.recoveryExport
 import androidx.compose.ui.text.style.TextOverflow
 import im.client.api.ContactRequestResp
 import im.client.api.ContactResp
@@ -1298,6 +1300,9 @@ fun TotpSetupDialog(
     var qrRows by remember { mutableStateOf<List<String>>(emptyList()) }
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     var copied by remember { mutableStateOf("") }
+    // 存档文本里要带上「谁、什么时候」—— 半年后从抽屉里翻出来也能对上
+    val accountLabel = remember { client.myUid }
+    val generatedAt = remember { nowTimestamp() }
     var code by remember { mutableStateOf("") }
     var recovery by remember { mutableStateOf<List<String>>(emptyList()) }
     var err by remember { mutableStateOf<String?>(null) }
@@ -1423,6 +1428,42 @@ fun TotpSetupDialog(
                                     style = MaterialTheme.typography.bodyMedium,
                                 )
                             }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    // 复制 / 保存 / 打印：三种都是「把这张纸留下来」，
+                    // 能力缺失的平台直接不显示按钮（而不是点了没反应）
+                    val exporter = remember { runCatching { recoveryExport() }.getOrNull() }
+                    val fullText = recoveryCodesAsText(
+                        account = accountLabel,
+                        codes = recovery,
+                        generatedAt = generatedAt,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = {
+                            clipboard.setText(AnnotatedString(fullText))
+                            copied = "恢复码"
+                        }) { Text(if (copied == "恢复码") "已复制" else "复制") }
+                        if (exporter?.canSave == true) {
+                            TextButton(enabled = !busy, onClick = {
+                                busy = true
+                                scope.launch {
+                                    val ok = exporter.save("雁书恢复码.txt", fullText)
+                                    copied = if (ok) "已保存" else ""
+                                    if (!ok) err = "保存失败或被取消"
+                                    busy = false
+                                }
+                            }) { Text(if (copied == "已保存") "已保存" else "下载") }
+                        }
+                        if (exporter?.canPrint == true) {
+                            TextButton(enabled = !busy, onClick = {
+                                busy = true
+                                scope.launch {
+                                    val ok = exporter.print(fullText)
+                                    if (!ok) err = "无法调起打印"
+                                    busy = false
+                                }
+                            }) { Text("打印") }
                         }
                     }
                 }
@@ -1556,5 +1597,36 @@ fun QrMatrix(rows: List<String>, modifier: Modifier = Modifier) {
             }
         }
     }
+}
+
+
+/** 生成 "2026-11-08 00:00" 形式的时间戳（common 层没有 java.time，这里用 epoch 手动换算） */
+private fun nowTimestamp(): String {
+    val ms = nowEpochMillis()
+    val totalSec = ms / 1000
+    val days = totalSec / 86400
+    val secOfDay = (totalSec % 86400).toInt()
+    val hh = (secOfDay / 3600 + 8) % 24       // 东八区
+    val mm = (secOfDay % 3600) / 60
+    // 1970-01-01 起的日期换算（够用即可，不引入 java.time）
+    var y = 1970
+    var d = days
+    while (true) {
+        val leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+        val len = if (leap) 366 else 365
+        if (d < len) break
+        d -= len
+        y++
+    }
+    val leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    val monthLen = intArrayOf(31, if (leap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+    var m = 0
+    while (m < 12 && d >= monthLen[m]) {
+        d -= monthLen[m]
+        m++
+    }
+    return y.toString() + "-" + (m + 1).toString().padStart(2, '0') + "-" +
+        (d + 1).toString().padStart(2, '0') + " " +
+        hh.toString().padStart(2, '0') + ":" + mm.toString().padStart(2, '0')
 }
 
