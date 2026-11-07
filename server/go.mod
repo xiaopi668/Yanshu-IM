@@ -11,6 +11,7 @@ require (
 	github.com/livekit/protocol v1.52.1
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/redis/go-redis/v9 v9.22.0
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/crypto v0.57.0
 	google.golang.org/protobuf v1.36.12
 )

@@ -502,7 +502,13 @@ data class PasskeyLoginBeginResp(
 data class TotpStatusResp(val enabled: Boolean = false, val recovery_left: Int = 0)
 
 @Serializable
-data class TotpSetupResp(val secret: String = "", val otpauth_url: String = "")
+data class TotpSetupResp(
+    val secret: String = "",
+    val otpauth_url: String = "",
+    /** 二维码矩阵：每行一串 '0'/'1'（服务端生成，已含静区） */
+    val qr_rows: List<String> = emptyList(),
+    val qr_size: Int = 0,
+)
 
 @Serializable
 data class TotpEnableResp(val recovery_codes: List<String> = emptyList())

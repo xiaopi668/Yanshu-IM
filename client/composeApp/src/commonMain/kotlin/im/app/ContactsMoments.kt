@@ -23,6 +23,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import im.client.api.ContactRequestResp
 import im.client.api.ContactResp
@@ -1294,6 +1295,9 @@ fun TotpSetupDialog(
 ) {
     var secret by remember { mutableStateOf("") }
     var otpauth by remember { mutableStateOf("") }
+    var qrRows by remember { mutableStateOf<List<String>>(emptyList()) }
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var copied by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var recovery by remember { mutableStateOf<List<String>>(emptyList()) }
     var err by remember { mutableStateOf<String?>(null) }
@@ -1306,6 +1310,7 @@ fun TotpSetupDialog(
             val s = client.api.totpSetup(client.myToken)
             secret = s.secret
             otpauth = s.otpauth_url
+            qrRows = s.qr_rows
         } catch (e: Throwable) {
             err = e.message ?: e.toString()
         } finally {
@@ -1319,11 +1324,42 @@ fun TotpSetupDialog(
         text = {
             Column {
                 if (recovery.isEmpty()) {
-                    Text(
-                        "1. 在验证器 App（Google Authenticator / 1Password / Microsoft Authenticator）里手动输入下面的密钥",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    // 二维码矩阵来自服务端：三端共用一份实现，也不用在线二维码 API
+                    //（那等于把 TOTP 密钥发给第三方）
+                    if (qrRows.isNotEmpty()) {
+                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            Surface(
+                                color = androidx.compose.ui.graphics.Color.White,
+                                shape = MaterialTheme.shapes.small,
+                            ) {
+                                QrMatrix(
+                                    rows = qrRows,
+                                    modifier = Modifier.padding(8.dp).size(176.dp),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "1. 用验证器 App 扫上面的二维码（扫不了就手动输入密钥）",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    } else {
+                        Text(
+                            "1. 在验证器 App 里手动输入下面的密钥",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("密钥", style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            clipboard.setText(AnnotatedString(secret))
+                            copied = "密钥"
+                        }, enabled = secret.isNotBlank()) {
+                            Text(if (copied == "密钥") "已复制" else "复制")
+                        }
+                    }
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceContainerHighest,
                         shape = MaterialTheme.shapes.small,
@@ -1348,10 +1384,26 @@ fun TotpSetupDialog(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "otpauth 地址（可直接导入验证器 App）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = {
+                            clipboard.setText(AnnotatedString(otpauth))
+                            copied = "地址"
+                        }, enabled = otpauth.isNotBlank()) {
+                            Text(if (copied == "地址") "已复制" else "复制")
+                        }
+                    }
                     Text(
-                        "otpauth 地址（可复制到支持导入的 App）：$otpauth",
+                        otpauth,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     )
                 } else {
                     Text(
@@ -1468,5 +1520,41 @@ fun TotpDisableDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") } },
     )
+}
+
+
+/**
+ * 把服务端给的二维码矩阵画出来。
+ *
+ * 只画点、不做纠错与编码 —— 编码在服务端完成（三端共用），这里纯渲染。
+ * 同色连续段合并成一次 drawRect：57x57 的码逐格画会有 3000+ 次绘制调用，
+ * 每 30 秒刷新一次设置页时能明显感到卡顿。
+ */
+@Composable
+fun QrMatrix(rows: List<String>, modifier: Modifier = Modifier) {
+    val dark = MaterialTheme.colorScheme.onSurface
+    androidx.compose.foundation.Canvas(modifier) {
+        val n = rows.size
+        if (n == 0) return@Canvas
+        val cell = size.minDimension / n
+        for (r in 0 until n) {
+            val line = rows[r]
+            var c = 0
+            while (c < line.length) {
+                if (line[c] != '1') {
+                    c++
+                    continue
+                }
+                var end = c
+                while (end < line.length && line[end] == '1') end++
+                drawRect(
+                    color = dark,
+                    topLeft = androidx.compose.ui.geometry.Offset(c * cell, r * cell),
+                    size = androidx.compose.ui.geometry.Size((end - c) * cell, cell),
+                )
+                c = end
+            }
+        }
+    }
 }
 

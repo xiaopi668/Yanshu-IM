@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skip2/go-qrcode"
+
 	"im/internal/auth"
 )
 
@@ -91,9 +93,19 @@ func (a *apiv1) totpSetup(w http.ResponseWriter, r *http.Request, uid string) {
 	if username == "" {
 		username = uid
 	}
-	writeJSON(w, 200, map[string]string{
+	otpauth := auth.OtpauthURL(totpIssuer, username, secret)
+	// 二维码矩阵由服务端生成（见 qrRows 的注释）：各端只负责按矩阵画点，
+	// 不用为每个平台各绑一个二维码库，也不会有人图省事去调在线二维码 API。
+	rows, err := qrRows(otpauth)
+	if err != nil {
+		fail(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{
 		"secret":      secret,
-		"otpauth_url": auth.OtpauthURL(totpIssuer, username, secret),
+		"otpauth_url": otpauth,
+		"qr_rows":     rows,
+		"qr_size":     len(rows),
 	})
 }
 
@@ -248,4 +260,37 @@ func (a *apiv1) verifyLoginTotp(ctx context.Context, uid, code string) (ok bool,
 		return false, true, err
 	}
 	return used, true, nil
+}
+
+// qrRows 把 otpauth 地址编成二维码矩阵（每行一串 '0'/'1'，已含 4 模块静区）。
+//
+// 为什么在服务端算：
+// - 客户端三端（Android / 桌面 / Web）各绑一个二维码库，成本与风险都高于这一处；
+// - 更要紧的是**绝不能用在线二维码 API** —— 那等于把用户的 TOTP 密钥发给第三方。
+// 这里用的是纯本地编码（skip2/go-qrcode），内容不出服务器。
+//
+// 返回矩阵而不是图片：客户端画点即可（Compose Canvas），不需要图片解码能力，
+// 也不受各端图片加载差异影响。
+func qrRows(content string) ([]string, error) {
+	// 中等纠错：屏幕上扫得动，也不会把码撑得太大
+	q, err := qrcode.New(content, qrcode.Medium)
+	if err != nil {
+		return nil, err
+	}
+	q.DisableBorder = false // 静区不能省：多数扫码器没有静区就定位不到
+	bitmap := q.Bitmap()
+	rows := make([]string, 0, len(bitmap))
+	for _, line := range bitmap {
+		var sb strings.Builder
+		sb.Grow(len(line))
+		for _, dark := range line {
+			if dark {
+				sb.WriteByte('1')
+			} else {
+				sb.WriteByte('0')
+			}
+		}
+		rows = append(rows, sb.String())
+	}
+	return rows, nil
 }
