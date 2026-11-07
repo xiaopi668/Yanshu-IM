@@ -2,6 +2,7 @@ package im.app
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -1085,14 +1086,55 @@ fun MessageBubble(client: ImClient, m: Msg, mine: Boolean) {
 fun AttachmentView(client: ImClient, m: Msg) {
     val att = m.attachment
     val scope = rememberCoroutineScope()
+    // att.url 现在是对象 key，不是可直接打开的地址：打开前用登录态换一张短时票据，
+    // 这样消息体里不会出现长期有效的登录 JWT。
+    val attKey = att?.url?.takeIf { it.isNotEmpty() }
     val label = when (m.msgType) {
-        MsgType.Image -> "🖼 ${att?.name ?: m.text}"
+        MsgType.Image -> att?.name ?: m.text
         MsgType.File -> "📄 ${att?.name ?: m.text}"
         MsgType.Audio -> "🎤 ${att?.name ?: m.text}"
         MsgType.Video -> "🎬 ${att?.name ?: m.text}"
         else -> m.text
     }
     Column {
+        // 图片直接内联渲染：点一下看原图。
+        // 缩略图固定 200dp + Crop，避免不同长宽比的图片把消息列表撑得参差不齐。
+        if (m.msgType == MsgType.Image && attKey != null) {
+            Box(
+                Modifier
+                    .size(200.dp)
+                    .clip(MaterialTheme.shapes.medium)
+                    .clickable {
+                        scope.launch {
+                            runCatching { openUrl(client.api.attachmentUrl(client.myToken, attKey)) }
+                        }
+                    },
+            ) {
+                NetImage(client.api, client.myToken, attKey, Modifier.fillMaxSize())
+            }
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f, fill = false),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+                att?.size?.let {
+                    Text(
+                        "  " + formatSize(it),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    )
+                }
+            }
+            TextButton(onClick = {
+                scope.launch { runCatching { openUrl(client.api.attachmentUrl(client.myToken, attKey)) } }
+            }) { Text("查看原图", style = MaterialTheme.typography.labelMedium) }
+            return@Column
+        }
         Text(label, style = MaterialTheme.typography.bodyMedium)
         att?.size?.let {
             Text(
@@ -1101,9 +1143,6 @@ fun AttachmentView(client: ImClient, m: Msg) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
             )
         }
-        // att.url 现在是对象 key，不是可直接打开的地址：打开前用登录态换一张短时票据，
-        // 这样消息体里不会出现长期有效的登录 JWT。
-        val attKey = att?.url?.takeIf { it.isNotEmpty() }
         if (attKey != null) {
             TextButton(onClick = {
                 scope.launch {

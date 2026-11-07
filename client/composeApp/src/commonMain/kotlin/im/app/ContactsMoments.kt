@@ -479,7 +479,13 @@ fun MomentComposer(client: ImClient, onDone: () -> Unit) {
 // key 是对象存储里的 key；地址在渲染时用调用方自己的登录态换短时票据得到，
 // 因此登录 JWT 不会出现在任何会被保存/分享的 URL 里。
 @Composable
-fun NetImage(api: im.client.api.Api, token: String, key: String, modifier: Modifier = Modifier) {
+fun NetImage(
+    api: im.client.api.Api,
+    token: String,
+    key: String,
+    modifier: Modifier = Modifier,
+    contentScale: androidx.compose.ui.layout.ContentScale = androidx.compose.ui.layout.ContentScale.Crop,
+) {
     var bmp by remember(key) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
     var failed by remember(key) { mutableStateOf(false) }
     LaunchedEffect(key) {
@@ -503,6 +509,7 @@ fun NetImage(api: im.client.api.Api, token: String, key: String, modifier: Modif
             androidx.compose.foundation.Image(
                 painter = androidx.compose.ui.graphics.painter.BitmapPainter(b),
                 contentDescription = null,
+                contentScale = contentScale,
                 modifier = Modifier.fillMaxSize(),
             )
         } else if (failed) {

@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/url"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -131,10 +132,26 @@ func (m *ObjectStore) PresignPut(kind string) (key string, putURL string, err er
 
 // PresignGet 预签名下载
 func (m *ObjectStore) PresignGet(key string, expire time.Duration) (string, error) {
+	return m.PresignGetNamed(key, expire, "")
+}
+
+// PresignGetNamed 与 PresignGet 相同，但让对象存储下发时带上 Content-Disposition。
+//
+// 为什么必须这么做：对象 key 是随机串（有意为之，防止按名字推导出别人的附件），
+// 直接 GET 只能拿到 key 当文件名 —— 中文名还会因为响应头被按 Latin-1 解释而变成乱码。
+// 用 S3 的 response-content-disposition 参数把「原始文件名」签进 URL，
+// 文件名就由我们自己决定，且不依赖对象自身的元数据。
+//
+// 头里同时给两份：filename（ASCII 兜底）+ filename*（RFC 5987，UTF-8）。
+func (m *ObjectStore) PresignGetNamed(key string, expire time.Duration, filename string) (string, error) {
 	if expire <= 0 {
 		expire = 24 * time.Hour
 	}
-	u, err := m.client.PresignedGetObject(context.Background(), m.bucket, key, expire, url.Values{})
+	params := url.Values{}
+	if filename != "" {
+		params.Set("response-content-disposition", ContentDisposition(filename))
+	}
+	u, err := m.client.PresignedGetObject(context.Background(), m.bucket, key, expire, params)
 	if err != nil {
 		return "", err
 	}
@@ -149,4 +166,42 @@ func (m *ObjectStore) Upload(key string, data []byte) error {
 	_, err := m.client.PutObject(ctx, m.bucket, key, reader, int64(len(data)),
 		minio.PutObjectOptions{ContentType: "application/octet-stream"})
 	return err
+}
+
+// ContentDisposition 生成同时兼容新旧客户端的下载头。
+//
+// RFC 5987 的 filename* 用百分号编码；filename 那份必须把非 ASCII 换成占位符，
+// 否则部分浏览器会拿它覆盖 filename*，中文名照样乱码 —— 这是本 bug 的直接原因。
+func ContentDisposition(filename string) string {
+	name := strings.ReplaceAll(filename, "\"", "'")
+	var ascii strings.Builder
+	for _, r := range name {
+		if r >= 0x20 && r < 0x7f {
+			ascii.WriteRune(r)
+		} else {
+			ascii.WriteByte('_')
+		}
+	}
+	fallback := ascii.String()
+	if fallback == "" {
+		fallback = "download"
+	}
+	return "attachment; filename=\"" + fallback + "\"; filename*=UTF-8''" + rfc5987Encode(name)
+}
+
+// rfc5987Encode 按 RFC 5987 的 attr-char 集合做百分号编码。
+// 不能用 url.QueryEscape：它把空格编成 '+'，而 RFC 5987 里 '+' 是字面量。
+func rfc5987Encode(s string) string {
+	const safe = "!#$&+-.^_|~"
+	var sb strings.Builder
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') ||
+			strings.IndexByte(safe, b) >= 0 {
+			sb.WriteByte(b)
+		} else {
+			fmt.Fprintf(&sb, "%%%02X", b)
+		}
+	}
+	return sb.String()
 }

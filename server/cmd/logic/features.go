@@ -394,7 +394,20 @@ func (a *apiv1) download(w http.ResponseWriter, r *http.Request) {
 		fail(w, 403, err)
 		return
 	}
-	url, err := objects.PresignGet(key, 1*time.Hour)
+	// 取原始文件名：对象 key 是随机串，直接下载会得到一串乱码般的名字
+	// （中文名还会因为响应头按 Latin-1 解释而彻底花掉）。
+	var attRaw string
+	_ = a.db.QueryRow(`SELECT attachment FROM message WHERE attachment_key=? LIMIT 1`, key).Scan(&attRaw)
+	name := ""
+	if attRaw != "" {
+		var att struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal([]byte(attRaw), &att) == nil {
+			name = att.Name
+		}
+	}
+	url, err := objects.PresignGetNamed(key, 1*time.Hour, name)
 	if err != nil {
 		fail(w, 500, err)
 		return
