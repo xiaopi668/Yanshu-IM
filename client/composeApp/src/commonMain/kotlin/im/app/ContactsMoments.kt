@@ -808,7 +808,7 @@ fun ProfileDialog(
                             when {
                                 !passkeyOk -> "当前平台不支持（请用浏览器登录后绑定）"
                                 passkeys.isEmpty() -> "未绑定 · 可用指纹/面容/设备 PIN 免密登录"
-                                else -> "已绑定 $passkeys.size 个"
+                                else -> "已绑定 ${passkeys.size} 个"
                             },
                             style = MaterialTheme.typography.bodySmall,
                         )
