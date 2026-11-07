@@ -149,6 +149,102 @@ private external fun jsSetVideo(enabled: Boolean)
 }""")
 private external fun jsHideVideo()
 
+// ---------- 摄像头翻转 / 本地镜像 ----------
+// 两个动作都在 DOM/JS 层：设备枚举、重新协商属于 livekit-client，
+// 镜像只是本地 <video> 的一个 CSS 变换（Compose 的 canvas 碰不到它）。
+
+/** 只有一颗摄像头时给界面的人话（按钮据此置灰并说明原因，不要静默无效） */
+private const val SINGLE_CAMERA_HINT = "这台设备只有一颗摄像头，无法翻转"
+
+@JsFun("""(onOk, onErr) => {
+  const LK = window.LivekitClient;
+  const r = window.__imCallRoom;
+  if (!LK || !r) { onErr('通话未接通'); return; }
+  const pubs = r.localParticipant && r.localParticipant.videoTrackPublications;
+  // 没有视频轨时 switchActiveDevice 是无效的（文档 §3）：先让用户开摄像头
+  if (!pubs || pubs.size === 0) { onErr('摄像头还没打开，先开摄像头再翻转'); return; }
+  const usable = (devs) => (devs || []).filter((d) => d && d.deviceId && d.deviceId !== 'default');
+  const currentId = () => {
+    try {
+      const active = r.getActiveDevice('videoinput');
+      if (active) return active;
+    } catch (e) {}
+    try {
+      const pub = Array.from(pubs.values()).find((p) => p && p.videoTrack);
+      const track = pub && pub.videoTrack && pub.videoTrack.mediaStreamTrack;
+      const st = track && track.getSettings && track.getSettings();
+      return (st && st.deviceId) || '';
+    } catch (e) {}
+    return '';
+  };
+  // 枚举设备前必须有摄像头权限，否则 label 全空、分不清前后摄（文档 §6.4）。
+  // 这里已经开过摄像头，所以第二个参数直接要求权限即可（不会再弹框）。
+  LK.Room.getLocalDevices('videoinput', true).then((devs) => {
+    const list = usable(devs);
+    // 少于两个设备：不是错误，是「这台机器只有一颗摄像头」——回 false 让界面解释
+    if (list.length < 2) { onOk(false); return; }
+    const active = currentId();
+    const next = list.find((d) => d.deviceId !== active);
+    if (!next) { onOk(false); return; }
+    return r.switchActiveDevice('videoinput', next.deviceId, true).then((sw) => {
+      const ok = (typeof sw === 'boolean') ? sw : !!(sw && (sw.isSwitched === undefined ? true : sw.isSwitched));
+      if (ok) onOk(true); else onErr('浏览器拒绝了摄像头切换');
+    });
+  }).catch((e) => onErr((e && e.message) ? e.message : String(e)));
+}""")
+private external fun jsSwitchCamera(onOk: (Boolean) -> Unit, onErr: (String) -> Unit)
+
+/**
+ * 探测当前摄像头朝向，并告诉 Kotlin 两件事：是不是后摄、是不是只有一颗摄像头。
+ *
+ * 摄像头刚打开时 publication 可能还没到，所以自己在 JS 里重试几次（200ms × 10），
+ * 比在 Kotlin 里写轮询简单，也不会阻塞主线程。
+ */
+@JsFun("""(onOk) => {
+  const LK = window.LivekitClient;
+  const r = window.__imCallRoom;
+  if (!LK || !r) { onOk(false, false); return; }
+  let tries = 0;
+  const attempt = () => {
+    tries += 1;
+    const pubs = r.localParticipant && r.localParticipant.videoTrackPublications;
+    if (!pubs || pubs.size === 0) {
+      if (tries < 10) { setTimeout(attempt, 200); return; }
+      onOk(false, false);
+      return;
+    }
+    LK.Room.getLocalDevices('videoinput', true).then((devs) => {
+      const list = (devs || []).filter((d) => d && d.deviceId && d.deviceId !== 'default');
+      let id = '';
+      try { id = r.getActiveDevice('videoinput') || ''; } catch (e) {}
+      if (!id) {
+        try {
+          const pub = Array.from(pubs.values()).find((p) => p && p.videoTrack);
+          const track = pub && pub.videoTrack && pub.videoTrack.mediaStreamTrack;
+          const st = track && track.getSettings && track.getSettings();
+          id = (st && st.deviceId) || '';
+        } catch (e) {}
+      }
+      const cur = list.find((d) => d.deviceId === id);
+      const label = (cur && cur.label) || '';
+      // 浏览器不提供结构化的「前置/后置」，只能看 label（中文 ROM 的 Chrome 常给「后置摄像头」）。
+      // 认不出来就按前摄处理 —— 照镜子的默认值，与 Android/系统相机一致。
+      const isBack = /(back|rear|environment|后置|後置|背面)/i.test(label);
+      onOk(isBack, list.length < 2);
+    }).catch(() => onOk(false, false));
+  };
+  attempt();
+}""")
+private external fun jsProbeCameraMirror(onOk: (Boolean, Boolean) -> Unit)
+
+/** 镜像只改本地预览那个 <video>，发布出去的流不受影响（文档 §6.1） */
+@JsFun("""(on) => {
+  const box = document.getElementById('im-local-video');
+  const v = box && box.querySelector('video');
+  if (v) v.style.transform = on ? 'scaleX(-1)' : '';
+}""")
+private external fun jsSetLocalMirror(on: Boolean)
+
 private object WebMediaSession : MediaSession {
     override val supported: Boolean = true
 
@@ -159,8 +255,91 @@ private object WebMediaSession : MediaSession {
         runCatching {
             jsInstallVideo()
             jsSetVideo(enabled)
-            if (!enabled) jsHideVideo()
+            if (enabled) {
+                // 摄像头刚开：按前后摄落地默认镜像 + 刷新「翻转」是否可用（§4.2 / §5 步骤 4.2）。
+                // jsSetVideo 是异步的，所以探测在 JS 侧自己重试，直到 publication 出现。
+                applyDefaultMirror()
+            } else {
+                jsHideVideo()
+                CallMediaExtras.setCameraSwitchHint("")
+            }
         }
+    }
+
+    /** 浏览器有 getUserMedia + 设备枚举，前后摄切换是真的 */
+    override val cameraSwitchSupported: Boolean = true
+
+    /** 用户在本通电话里手动拨过的镜像选择；null = 还没拨过，按摄像头朝向取默认 */
+    private var mirrorOverride: Boolean? = null
+
+    /**
+     * 探测序号：JS 侧的探测会重试最多 2 秒，挂断/重开摄像头期间回来的旧回包必须丢弃，
+     * 否则它会把上一通电话的镜像状态写回界面（按钮文案与画面就对不上了）。
+     */
+    private var mirrorEpoch = 0
+
+    override fun setLocalMirror(on: Boolean) {
+        mirrorOverride = on
+        applyMirror(on)
+    }
+
+    /**
+     * 切换前后摄像头。
+     *
+     * 返回值语义与 Android 一致：false = 没切成。其中「只有一颗摄像头」是**可解释的失败**，
+     * 要把原因写给界面（按钮置灰）；其它失败（未接通/浏览器拒绝）只回 false，不写死原因。
+     */
+    override suspend fun switchCamera(): Boolean {
+        var singleCamera = false
+        val ok = suspendCancellableCoroutine { cont ->
+            jsSwitchCamera(
+                { switched ->
+                    if (!switched) singleCamera = true
+                    if (cont.isActive) cont.resume(switched)
+                },
+                { msg ->
+                    // 打日志而不是写 hint：这类失败是暂时的，写进 hint 会把按钮永久置灰
+                    println("切换摄像头失败: $msg")
+                    if (cont.isActive) cont.resume(false)
+                },
+            )
+        }
+        if (ok) {
+            CallMediaExtras.setCameraSwitchHint("")
+            applyDefaultMirror()
+        } else if (singleCamera) {
+            CallMediaExtras.setCameraSwitchHint(SINGLE_CAMERA_HINT)
+        }
+        return ok
+    }
+
+    /**
+     * 按当前摄像头朝向落地默认镜像（§4.2）：后摄不镜像、前摄镜像；
+     * 用户在本通电话里手动拨过，则以用户为准（切到后摄仍然强制不镜像）。
+     *
+     * 为什么能直接覆盖用户选择：只有在「切到后摄」时我们才清掉 mirrorOverride，
+     * 切回前摄时用户之前的选择仍然生效 —— 这就是文档要的「不要每次切摄像头又复位」。
+     */
+    private fun applyDefaultMirror() {
+        val epoch = ++mirrorEpoch
+        runCatching {
+            jsProbeCameraMirror { isBack, singleCamera ->
+                if (epoch != mirrorEpoch) return@jsProbeCameraMirror // 过期回包：这通电话已经结束了
+                CallMediaExtras.setCameraSwitchHint(if (singleCamera) SINGLE_CAMERA_HINT else "")
+                if (isBack) {
+                    mirrorOverride = null
+                    applyMirror(false)
+                } else {
+                    applyMirror(mirrorOverride ?: true)
+                }
+            }
+        }.onFailure { println("探测摄像头朝向失败: $it") }
+    }
+
+    /** 镜像同时改 DOM 与界面状态，避免界面说「已镜像」而画面没翻 */
+    private fun applyMirror(on: Boolean) {
+        runCatching { jsSetLocalMirror(on) }
+        CallMediaExtras.setMirrorOn(on)
     }
 
     override fun placeVideoSurfaces(left: Int, top: Int, width: Int, height: Int, localSize: Int) {
@@ -194,6 +373,12 @@ private object WebMediaSession : MediaSession {
     override suspend fun leave() {
         runCatching { jsHideVideo() }
         jsLeaveCall()
+        // 镜像与翻转状态复位：不清的话下一通电话会继承上一通（文档 §6.6）
+        mirrorEpoch += 1 // 让还在重试中的探测回包失效
+        mirrorOverride = null
+        runCatching { jsSetLocalMirror(false) }
+        CallMediaExtras.setMirrorOn(false)
+        CallMediaExtras.setCameraSwitchHint("")
     }
 }
 

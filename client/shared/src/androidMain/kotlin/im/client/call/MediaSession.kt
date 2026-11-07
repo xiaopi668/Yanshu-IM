@@ -10,6 +10,11 @@ import io.livekit.android.RoomOptions
 import io.livekit.android.events.DisconnectReason
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.room.Room
+import io.livekit.android.room.track.CameraPosition
+import io.livekit.android.room.track.LocalVideoTrack
+import io.livekit.android.room.track.Track
+import io.livekit.android.room.track.VideoTrack
+import io.livekit.android.room.track.video.CameraCapturerUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -71,6 +76,12 @@ private const val MIC_RELEASE_TIMEOUT_MS = 2_000L
 /** 挂断最多等 join 多久让出锁；等不到就交给 join 自己收尾 */
 private const val LEAVE_LOCK_TIMEOUT_MS = 1_500L
 
+/** 换摄像头后等多久再重挂渲染器：太早新采集器还没起，太晚用户先看到黑屏 */
+private const val RENDERER_REATTACH_DELAY_MS = 400L
+
+/** 只有一颗摄像头时给界面的人话（按钮据此置灰并说明原因，不要静默无效） */
+private const val SINGLE_CAMERA_HINT = "这台设备只有一颗摄像头，无法翻转"
+
 /** 我们自己产出的、已经是「人话」的失败；[explainFailure] 原样透传，不再二次翻译 */
 private class CallFailure(message: String) : RuntimeException(message)
 
@@ -99,6 +110,17 @@ private object AndroidMediaSession : MediaSession {
     /** 有人在这通电话期间调过 leave（用于放弃正在进行的 join） */
     @Volatile
     private var leaveRequested = false
+
+    /** 当前摄像头朝向（仅主线程读写）。默认前摄，与系统相机一致 */
+    private var cameraPosition: CameraPosition = CameraPosition.FRONT
+
+    /**
+     * 用户在本通电话里手动拨过的镜像选择；null = 还没拨过，按摄像头朝向取默认值。
+     *
+     * 为什么单独记：文档 §4.2 要求「手动拨过之后以用户为准，不要每次切摄像头又复位」，
+     * 只有记下「用户拨过」这件事，才能同时满足这条和「切到后摄强制不镜像」。
+     */
+    private var mirrorOverride: Boolean? = null
 
     /**
      * 这台设备此刻能不能通话：只判有没有麦克风。
@@ -148,21 +170,133 @@ private object AndroidMediaSession : MediaSession {
             runCatching { r.localParticipant.setCameraEnabled(enabled) }
                 .onSuccess { on ->
                     Log.i(TAG, "摄像头=" + on)
-                    if (!on) AndroidCallVideo.detachLocalTrack()
+                    if (!on) {
+                        AndroidCallVideo.detachLocalTrack()
+                        CallMediaExtras.setCameraSwitchHint("")
+                    }
                 }
                 .onFailure { Log.w(TAG, "切换摄像头失败（enabled=" + enabled + "）", it) }
             // publish 成功后把本地画面挂到预览槽位
             if (enabled) {
                 runCatching {
-                    val pub = r.localParticipant.getTrackPublication(
-                        io.livekit.android.room.track.Track.Source.CAMERA,
-                    )
-                    // LocalTrackPublication 没有 videoTrack 便捷属性，要从 track 上转
-                    (pub?.track as? io.livekit.android.room.track.VideoTrack)
-                        ?.let { AndroidCallVideo.attachLocalTrack(it) }
-                }
+                    val pub = r.localParticipant.getTrackPublication(Track.Source.CAMERA)
+                    // LocalTrackPublication 没有 videoTrack 便捷属性，要从 track 上转；
+                    // 这里要的是 LocalVideoTrack（能 switchCamera），不是父类 VideoTrack
+                    val track = pub?.track as? LocalVideoTrack
+                    track?.let {
+                        // 记住当前朝向，并按 §4.2 落地默认镜像：前摄镜像、后摄不镜像。
+                        // 先设镜像再挂渲染器也行 —— AndroidCallVideo 会把状态补到新 View 上。
+                        cameraPosition = runCatching { it.options.position }.getOrNull() ?: CameraPosition.FRONT
+                        applyMirrorForPosition(cameraPosition)
+                        AndroidCallVideo.attachLocalTrack(it)
+                    }
+                }.onFailure { Log.w(TAG, "本地预览挂载失败", it) }
+                // 只有一颗摄像头时把「翻转」置灰的原因说清楚（不能等用户点了才知道）
+                refreshCameraSwitchHint()
             }
         }
+    }
+
+    /** Android 有 LocalVideoTrack.switchCamera + GL 镜像，能力是真的 */
+    override val cameraSwitchSupported: Boolean = true
+
+    /**
+     * 本地预览镜像：记下用户的选择并立刻应用（发布出去的流不受影响，否则对方看到的字是反的）。
+     */
+    override fun setLocalMirror(on: Boolean) {
+        mirrorOverride = on
+        applyMirror(on)
+    }
+
+    /**
+     * 切换前后摄像头（文档 §5 步骤 2）。
+     *
+     * 返回 false 的三种情况都必须让界面能解释：摄像头没开、设备只有一颗摄像头、SDK 切换抛异常。
+     * 用 `switchCamera` 而不是 `setCameraEnabled(false/true)`：后者会重新走一遍权限申请，
+     * 用户可能被系统再弹一次框、甚至被拒（文档 §6.3）。
+     */
+    override suspend fun switchCamera(): Boolean = withContext(Dispatchers.Main.immediate) {
+        val track = localCameraTrack()
+        if (track == null) {
+            Log.w(TAG, "切换摄像头：本地视频轨不存在（摄像头没开？）")
+            return@withContext false
+        }
+        val target =
+            if (cameraPosition == CameraPosition.FRONT) CameraPosition.BACK else CameraPosition.FRONT
+        if (!hasCameraFacing(target)) {
+            Log.w(TAG, "切换摄像头：设备上没有 $target 方向的摄像头")
+            CallMediaExtras.setCameraSwitchHint(SINGLE_CAMERA_HINT)
+            return@withContext false
+        }
+        val switched = runCatching {
+            // deviceId 传空串 = 由 SDK 选。不要自己拼设备 ID：不同 ROM 的编号规则不一样
+            track.switchCamera("", target)
+        }.onFailure { Log.w(TAG, "切换摄像头异常（target=$target）", it) }.isSuccess
+        if (!switched) return@withContext false
+
+        cameraPosition = target
+        CallMediaExtras.setCameraSwitchHint("")
+        // §4.2：切到后摄强制不镜像（并清掉手动选择）；切回前摄时用户选过就以用户为准
+        if (target == CameraPosition.BACK) {
+            mirrorOverride = null
+            applyMirror(false)
+        } else {
+            applyMirror(mirrorOverride ?: true)
+        }
+        // 换摄像头会重开采集器，旧 renderer 可能不再收帧（黑屏、但声音照旧）→ 延迟重挂一次
+        scope.launch {
+            delay(RENDERER_REATTACH_DELAY_MS)
+            AndroidCallVideo.refreshLocalRenderer()
+        }
+        Log.i(TAG, "已切换摄像头：$target")
+        true
+    }
+
+    /** 当前本地视频轨（摄像头没开时为 null）。要 LocalVideoTrack —— 只有它才有 switchCamera */
+    private fun localCameraTrack(): LocalVideoTrack? = runCatching {
+        room?.localParticipant?.getTrackPublication(Track.Source.CAMERA)?.track as? LocalVideoTrack
+    }.getOrNull()
+
+    /** 镜像同时写「渲染器」与「界面状态」，避免界面说已镜像而画面没翻（或反过来） */
+    private fun applyMirror(on: Boolean) {
+        AndroidCallVideo.setLocalMirror(on)
+        CallMediaExtras.setMirrorOn(on)
+    }
+
+    /** 按摄像头朝向落地默认镜像（§4.2）：前摄镜像、后摄不镜像，用户手动选择优先 */
+    private fun applyMirrorForPosition(position: CameraPosition) {
+        val effective = if (position == CameraPosition.BACK) false else (mirrorOverride ?: true)
+        applyMirror(effective)
+    }
+
+    /**
+     * 设备上是否存在某个朝向的摄像头。
+     *
+     * 用 SDK 自己的枚举器判（`CameraCapturerUtils.createCameraEnumerator` 不需要 CAMERA 权限）。
+     * 探测失败时返回 true：宁可让用户点一次再看到失败原因，也不要凭一次异常替用户否决功能。
+     */
+    private fun hasCameraFacing(position: CameraPosition): Boolean {
+        val ctx = im.client.db.appContext ?: return true
+        return runCatching {
+            val enumerator = CameraCapturerUtils.createCameraEnumerator(ctx)
+            enumerator.deviceNames.any { name ->
+                if (position == CameraPosition.FRONT) enumerator.isFrontFacing(name)
+                else enumerator.isBackFacing(name)
+            }
+        }.getOrDefault(true)
+    }
+
+    /**
+     * 摄像头打开后刷新「翻转」是否可用：只有一颗摄像头时写人话，
+     * 界面据此置灰按钮并显示原因（文档 §5 步骤 4.2：不要静默无效）。
+     */
+    private fun refreshCameraSwitchHint() {
+        val ctx = im.client.db.appContext ?: return
+        val count = runCatching {
+            CameraCapturerUtils.createCameraEnumerator(ctx).deviceNames.size
+        }.getOrDefault(-1)
+        // -1 = 探测失败：不要写死「只有一颗」，让用户点了由 switchCamera 回一个真实原因
+        CallMediaExtras.setCameraSwitchHint(if (count == 1) SINGLE_CAMERA_HINT else "")
     }
 
     override suspend fun join(url: String, token: String): Result<Unit> =
@@ -315,6 +449,12 @@ private object AndroidMediaSession : MediaSession {
                     }.onFailure { Log.w(TAG, "关闭摄像头失败（继续清理）", it) }
                     AndroidCallVideo.detachLocalTrack()
                     AndroidCallVideo.detachRemote()
+                    // 镜像与翻转状态一起复位：不清的话下一通电话会继承上一通的镜像（文档 §6.6）
+                    mirrorOverride = null
+                    cameraPosition = CameraPosition.FRONT
+                    AndroidCallVideo.setLocalMirror(false)
+                    CallMediaExtras.setMirrorOn(false)
+                    CallMediaExtras.setCameraSwitchHint("")
 
                     // 1) 关麦：这是「挂断后系统状态栏麦克风指示灯消失」的关键一步（先关再断）
                     runCatching {

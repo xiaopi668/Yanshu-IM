@@ -39,6 +39,31 @@ actual object CallMediaExtras {
         _videoBlocked.value = blocked
     }
 
+    // ---------- 摄像头翻转 / 本地镜像（docs/AGENT-camera-switch-mirror.md §4.3） ----------
+
+    /** Android 用 SurfaceViewRenderer 的 GL 镜像 + LocalVideoTrack.switchCamera，能力是真的 */
+    actual val cameraSwitchSupported: Boolean = true
+
+    private val _mirrorOn = MutableStateFlow(false)
+
+    /** 本地预览是否镜像；真实值由 [AndroidMediaSession] 按摄像头朝向与用户选择写入 */
+    actual val mirrorOn: StateFlow<Boolean> = _mirrorOn.asStateFlow()
+
+    private val _cameraSwitchHint = MutableStateFlow("")
+
+    /** 「翻转」不可用的原因（只有一颗摄像头时会写上） */
+    actual val cameraSwitchHint: StateFlow<String> = _cameraSwitchHint.asStateFlow()
+
+    /** MediaSession：镜像状态回写（界面只读，不直接改，免得和渲染器实际状态不一致） */
+    internal fun setMirrorOn(value: Boolean) {
+        if (_mirrorOn.value != value) _mirrorOn.value = value
+    }
+
+    /** MediaSession：「翻转」不可用的原因（空串 = 可用） */
+    internal fun setCameraSwitchHint(reason: String) {
+        if (_cameraSwitchHint.value != reason) _cameraSwitchHint.value = reason
+    }
+
     actual fun setSpeaker(on: Boolean) = CallAudioRouter.setSpeaker(on)
 
     actual fun toggleSpeaker() = CallAudioRouter.setSpeaker(!_speakerOn.value)

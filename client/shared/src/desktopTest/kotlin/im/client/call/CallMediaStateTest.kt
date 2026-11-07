@@ -175,6 +175,64 @@ class CallMediaStateTest {
             awaitCondition { fake.leaveCount.get() == 2 }
         }
     }
+
+    // ---------- 用例 8：摄像头翻转 / 本地镜像只做转发 ----------
+    //
+    // docs/AGENT-camera-switch-mirror.md §4.4：具体动作在 MediaSession，CallController 只转发、
+    // 不新增媒体状态机。这两条测试钉住的就是这个边界：不该转发时一次都不调（点了没反应要能解释），
+    // 该转发时只调一次（不能因为是 suspend 就重复排队）。
+
+    @Test
+    fun switchCameraForwardsOnlyWhenPlatformReallySupportsIt() {
+        // 1) 平台不支持（桌面就是这种）：按钮那边根本不该显示，转发也必须一次都不发生
+        val unsupported = FakeMediaSession(cameraSwitchSupported = false)
+        withController(unsupported) { controller ->
+            controller.handleSignal(acceptSignal())
+            awaitState(controller) { it.media == CallMediaState.Connected }
+
+            assertFalse(controller.cameraSwitchSupported)
+            controller.switchCamera()
+            // 给协程一点调度机会，确认「没有转发」而不是「还没来得及转发」
+            delay(300)
+            assertEquals(0, unsupported.switchCount.get())
+        }
+
+        // 2) 平台支持：接通后点一次 → 媒体面被调用一次
+        val supported = FakeMediaSession(cameraSwitchSupported = true)
+        withController(supported) { controller ->
+            controller.handleSignal(acceptSignal())
+            awaitState(controller) { it.media == CallMediaState.Connected }
+
+            assertTrue(controller.cameraSwitchSupported)
+            controller.switchCamera()
+            awaitCondition { supported.switchCount.get() == 1 }
+            assertEquals(1, supported.switchCount.get())
+        }
+    }
+
+    @Test
+    fun switchCameraDoesNothingBeforeConnected() {
+        // 还没进通话就点「翻转」：状态机不该被惊动（媒体面甚至没建房间）
+        val fake = FakeMediaSession(cameraSwitchSupported = true)
+        withController(fake) { controller ->
+            controller.switchCamera()
+            delay(300)
+            assertEquals(0, fake.switchCount.get())
+        }
+    }
+
+    @Test
+    fun toggleMirrorFlipsCurrentStateAndForwardsOnce() {
+        val fake = FakeMediaSession()
+        withController(fake) { controller ->
+            controller.handleSignal(acceptSignal())
+            awaitState(controller) { it.media == CallMediaState.Connected }
+
+            // 桌面端 CallMediaExtras.mirrorOn 恒 false → 第一次点「镜像」应当是「开」
+            controller.toggleMirror()
+            assertEquals(listOf(true), fake.mirrorCalls.toList())
+        }
+    }
 }
 
 private const val LIVEKIT_URL = "wss://livekit.test/rtc"
@@ -188,6 +246,8 @@ private const val LIVEKIT_URL = "wss://livekit.test/rtc"
 private class FakeMediaSession(
     override val supported: Boolean = true,
     private val joinResult: Result<Unit> = Result.success(Unit),
+    /** 该端能否切前后摄（默认 false，与桌面 actual 一致） */
+    override val cameraSwitchSupported: Boolean = false,
 ) : MediaSession {
     /** join 的入参（url 到 token）。join 跑在控制器自己的 scope 上，所以用同步列表 */
     val joinCalls: MutableList<Pair<String, String>> = Collections.synchronizedList(mutableListOf())
@@ -213,6 +273,21 @@ private class FakeMediaSession(
 
     override suspend fun leave() {
         leaveCount.incrementAndGet()
+    }
+
+    /** switchCamera 被调用了几次（>1 说明 suspend 转发被重复排队） */
+    val switchCount = AtomicInteger(0)
+
+    /** setLocalMirror 收到的值，按顺序记录 */
+    val mirrorCalls: MutableList<Boolean> = Collections.synchronizedList(mutableListOf())
+
+    override suspend fun switchCamera(): Boolean {
+        switchCount.incrementAndGet()
+        return true
+    }
+
+    override fun setLocalMirror(on: Boolean) {
+        mirrorCalls.add(on)
     }
 }
 

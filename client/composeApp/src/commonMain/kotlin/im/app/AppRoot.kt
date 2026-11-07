@@ -409,6 +409,8 @@ fun MainScreen(
             videoOn = callState.videoOn,
             videoSupported = client.callController.videoSupported,
             onToggleVideo = { client.callController.toggleVideo() },
+            onSwitchCamera = { client.callController.switchCamera() },
+            onToggleMirror = { client.callController.toggleMirror() },
         )
         else -> {}
     }
@@ -477,6 +479,7 @@ fun CallingOverlay(peer: String, onCancel: () -> Unit) {
  *   状态机本身不加字段 —— 计时是表现层的事，混进 [im.client.CallUiState] 会让
  *   状态机语义（信令 + 媒体）变糊。
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun InCallOverlay(
     peer: String,
@@ -490,9 +493,13 @@ fun InCallOverlay(
     video: Boolean = false,
     /** 本端摄像头是否已打开 */
     videoOn: Boolean = false,
-    /** 该端是否能真的出画面（目前只有 Web） */
+    /** 该端是否能真的出画面（Android / Web） */
     videoSupported: Boolean = false,
     onToggleVideo: () -> Unit = {},
+    /** 切换前后摄像头（只转发给媒体面，见 CallController.switchCamera） */
+    onSwitchCamera: () -> Unit = {},
+    /** 本地预览镜像开关 */
+    onToggleMirror: () -> Unit = {},
 ) {
     val scheme = MaterialTheme.colorScheme
     // 三项里只有 Android 会真的变化；Web/桌面是常量（见各端 actual）
@@ -500,6 +507,11 @@ fun InCallOverlay(
     val reconnecting by CallMediaExtras.reconnecting.collectAsState()
     val micPermissionBlocked by CallMediaExtras.micPermissionBlocked.collectAsState()
     val videoBlocked by CallMediaExtras.videoBlocked.collectAsState()
+    // 摄像头翻转/镜像：真实动作在媒体面，界面只读状态（docs/AGENT-camera-switch-mirror.md §4.3）。
+    // 是否支持翻转是平台常量（Android/Web true、桌面 false），与 videoSupported 同源但更细。
+    val cameraSwitchable = CallMediaExtras.cameraSwitchSupported
+    val mirrorOn by CallMediaExtras.mirrorOn.collectAsState()
+    val cameraSwitchHint by CallMediaExtras.cameraSwitchHint.collectAsState()
     // 「去设置」能不能用只有点下去才知道（openAppSettings() 拿不到宿主 Context 时返回 false）。
     // 组合期不能试调 —— 试调成功就真的跳转到设置页了。所以先按状态渲染，失败一次就隐藏，
     // 免得留下一个点了没反应的按钮。
@@ -582,6 +594,18 @@ fun InCallOverlay(
                     )
                 }
 
+                // 「翻转」为什么点不动：只有一颗摄像头的设备上必须说明，不能静默无效
+                // （文案由媒体面写入 CallMediaExtras.cameraSwitchHint，界面只管展示）
+                if (videoSupported && cameraSwitchHint.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        cameraSwitchHint,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = scheme.inverseOnSurface.copy(alpha = 0.8f),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
+
                 // 阶段 5：权限被拒是唯一「用户自己能修」的失败，给一条出路；
                 // 其它失败（token 过期 / 地址不可达）没有可操作项，只显示原因。
                 if ((media == CallMediaState.Failed && micPermissionBlocked) || videoBlocked) {
@@ -597,9 +621,12 @@ fun InCallOverlay(
                 }
 
                 Spacer(Modifier.height(24.dp))
-                Row(
+                // 用 FlowRow 而不是 Row：这一行现在最多有 6 个按钮（免提/静音/摄像头/翻转/镜像/挂断），
+                // 窄屏上单行必然溢出 —— 溢出不是「被裁掉」，而是把「挂断」挤出屏幕之外。
+                FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    itemVerticalAlignment = Alignment.CenterVertically,
                 ) {
                     // 免提：只有该平台真的能切音频路由时才出现（Web 由浏览器决定，桌面没有媒体面）
                     if (CallMediaExtras.speakerSupported) {
@@ -627,6 +654,29 @@ fun InCallOverlay(
                             enabled = media == CallMediaState.Connected,
                         ) {
                             Text(if (videoOn) "关摄像头" else "开摄像头")
+                        }
+                    }
+                    // 翻转前后摄像头。三个前置条件缺一不可：
+                    // - 该端真的支持切换（桌面不算，文档 §6.7：不要假装支持）
+                    // - 已经接通、且本地预览开着（没开摄像头时切换是无操作）
+                    // - 没有「不可切换」的原因（只有一颗摄像头时置灰 + 上方文案说明）
+                    if (videoSupported && cameraSwitchable) {
+                        FilledTonalButton(
+                            onClick = onSwitchCamera,
+                            enabled = media == CallMediaState.Connected &&
+                                videoOn && cameraSwitchHint.isBlank(),
+                        ) {
+                            Text("翻转")
+                        }
+                    }
+                    // 镜像只影响本地预览小窗（发布出去的流不镜像，否则对方看到的字是反的），
+                    // 所以只在本地画面可见时出现。文案按「点了会变成什么」写，与免提键一致。
+                    if (videoSupported && videoOn && !videoBlocked) {
+                        FilledTonalButton(
+                            onClick = onToggleMirror,
+                            enabled = media == CallMediaState.Connected,
+                        ) {
+                            Text(if (mirrorOn) "取消镜像" else "镜像")
                         }
                     }
                     Button(
