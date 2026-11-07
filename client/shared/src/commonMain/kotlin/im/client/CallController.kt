@@ -1,5 +1,6 @@
 package im.client
 
+import im.client.call.CallMediaExtras
 import im.client.net.ImConnection
 import im.client.proto.CallEventType
 import im.client.proto.CallSignalData
@@ -173,6 +174,42 @@ class CallController(
     }
 
     fun toggleVideo() = setVideoEnabled(!_state.value.videoOn)
+
+    /**
+     * 该端是否支持前后摄像头切换（UI 据此决定显不显示「翻转」）。
+     *
+     * 与 [videoSupported] 同源：能力在媒体面，UI 只在它上面做展示，
+     * 不自己猜平台（KMP 里没有 `if (isAndroid)` 这种开关）。
+     */
+    val cameraSwitchSupported: Boolean get() = media.cameraSwitchSupported
+
+    /**
+     * 切换前后摄像头。**只做转发**，不在这里维护媒体状态机（AGENT.md §3.4 第 1 条）。
+     *
+     * 结果不通过 [CallUiState] 回填：切换是否真的发生、为什么没发生，
+     * 由媒体面写进 [CallMediaExtras.cameraSwitchHint]（人话），界面读那里就够了。
+     *
+     * 为什么包在 `scope.launch` 里：媒体面是 suspend（Web 要重新协商、Android 要重开采集器），
+     * 同步调用会把 UI 线程卡住；点一下按钮的语义本来就是「发出去」。
+     */
+    fun switchCamera() {
+        val s = _state.value
+        if (s.state != CallState.InCall || !media.cameraSwitchSupported) return
+        // 失败原因由媒体面写进 CallMediaExtras.cameraSwitchHint（人话），这里不重复报错
+        scope.launch { runCatching { media.switchCamera() } }
+    }
+
+    /**
+     * 本地预览镜像开关（只影响本地预览，不影响发布出去的流）。
+     *
+     * 当前值从 [CallMediaExtras.mirrorOn] 读，而不是在 [CallUiState] 里再存一份：
+     * 默认值（前摄镜像/后摄不镜像）是媒体面按摄像头位置定的，存两份必然对不上。
+     */
+    fun toggleMirror() {
+        val s = _state.value
+        if (s.state != CallState.InCall) return
+        runCatching { media.setLocalMirror(!CallMediaExtras.mirrorOn.value) }
+    }
 
     /** 静音 / 取消静音（只在通话中有效） */
     fun toggleMute() {

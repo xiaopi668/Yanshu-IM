@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 actual object CallMediaExtras {
     private val falseFlow = MutableStateFlow(false)
+    private val emptyText = MutableStateFlow("")
 
     actual val speakerOn: StateFlow<Boolean> = falseFlow.asStateFlow()
     actual val speakerSupported: Boolean = false
@@ -17,6 +18,12 @@ actual object CallMediaExtras {
     actual val micPermissionBlocked: StateFlow<Boolean> = falseFlow.asStateFlow()
     actual val videoBlocked: StateFlow<Boolean> = falseFlow.asStateFlow()
     actual fun setVideoBlocked(blocked: Boolean) = Unit
+
+    // 摄像头翻转/镜像：侧车只做音频，这里如实 false（docs/AGENT-camera-switch-mirror.md §6.7）。
+    // 不为了让按钮「看起来能点」而返回 true —— 那会变成一个点了没反应的按钮。
+    actual val cameraSwitchSupported: Boolean = false
+    actual val mirrorOn: StateFlow<Boolean> = falseFlow.asStateFlow()
+    actual val cameraSwitchHint: StateFlow<String> = emptyText.asStateFlow()
 
     actual fun setSpeaker(on: Boolean) = Unit
     actual fun toggleSpeaker() = Unit

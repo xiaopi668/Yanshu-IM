@@ -35,6 +35,14 @@ object AndroidCallVideo {
      */
     private var eglBase: EglBase? = null
 
+    /**
+     * 本地预览是否镜像。
+     *
+     * 存成字段而不是「读 renderer 当前值」：Compose 会重建 View（切前后台、重进通话页），
+     * 新 renderer 是干净状态，必须由这里把它补回用户选的样子，否则镜像会「自己关掉」。
+     */
+    private var localMirrored = false
+
     private fun egl(): EglBase {
         eglBase?.let { return it }
         val created = EglBase.create()
@@ -68,6 +76,8 @@ object AndroidCallVideo {
         val renderer = SurfaceViewRenderer(context)
         localRenderer = renderer
         prepare(renderer)
+        // 新 View 是干净状态：把用户选过的镜像补回去（否则重进通话页镜像就丢了）
+        applyMirror(renderer)
         localTrack?.let { attachLocal(it, renderer) }
         return renderer
     }
@@ -114,12 +124,49 @@ object AndroidCallVideo {
         localTrack = null
     }
 
+    /**
+     * 本地预览镜像开关（只影响本地预览小窗）。
+     *
+     * 用 `SurfaceViewRenderer.setMirror`（继承自 `livekit.org.webrtc.SurfaceViewRenderer`，
+     * 最终落到 `EglRenderer.mirrorHorizontally`，是 GL 层的镜像，画面内容真的会翻）。
+     * 不用 `view.scaleX = -1f`：SurfaceView 的画面由独立图层合成，View 变换不一定作用于
+     * surface 内容 —— docs/AGENT-camera-switch-mirror.md 里「没有 setMirror」的描述与
+     * livekit-android 2.29.2 的实际情况不符，以这里为准。
+     */
+    fun setLocalMirror(on: Boolean) {
+        localMirrored = on
+        localRenderer?.let { applyMirror(it) }
+    }
+
+    /**
+     * 切换摄像头后重新挂载本地轨道。
+     *
+     * 为什么需要：换摄像头会重开采集器，旧的 renderer 可能不再收到帧（表现就是黑屏，
+     * 音频照旧）—— 文档 §6.5。remove + add 一次成本很低，调用方延迟一点调即可。
+     */
+    fun refreshLocalRenderer() {
+        val renderer = localRenderer ?: return
+        val track = localTrack ?: return
+        runCatching { track.removeRenderer(renderer) }
+            .onFailure { Log.w(TAG, "切换后解绑本地预览失败（继续重挂）", it) }
+        attachLocal(track, renderer)
+        // 重挂不应该改变镜像状态，补一次以防 SDK 内部重绘路径重置了它
+        applyMirror(renderer)
+    }
+
+    private fun applyMirror(renderer: SurfaceViewRenderer) {
+        runCatching { renderer.setMirror(localMirrored) }
+            .onFailure { Log.w(TAG, "设置镜像失败（预览不翻转）", it) }
+    }
+
     /** 挂断时清空全部槽位（View 由 Compose 销毁，这里只管轨道引用与 GL 上下文） */
     internal fun clear() {
         remoteTrack = null
         localTrack = null
         remoteRenderer = null
         localRenderer = null
+        // 镜像状态一起复位：不清理的话下一通电话会继承上一通（文档 §6.6）
+        localMirrored = false
         maybeReleaseEgl()
     }
 

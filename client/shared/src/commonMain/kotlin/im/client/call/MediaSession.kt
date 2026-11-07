@@ -61,6 +61,33 @@ interface MediaSession {
      * 否则画面会固定停在某个角落、盖住按钮 —— 人机验证小组件踩过同样的坑。
      */
     fun placeVideoSurfaces(left: Int, top: Int, width: Int, height: Int, localSize: Int) {}
+
+    // ---------- 摄像头切换与本地镜像（可选能力） ----------
+    // 默认全部按「不支持」处理：桌面侧车只做音频，没有采集管线可切。
+    // 覆盖它们的是 Android（LiveKit 原生渲染器）与 Web（DOM <video>）。
+
+    /** 该端是否支持前后摄像头切换（决定 UI 是否显示「翻转」） */
+    val cameraSwitchSupported: Boolean get() = false
+
+    /**
+     * 切换前后摄像头。
+     *
+     * 为什么是 suspend 且返回 Boolean：
+     * - 两端都可能重建采集管线（Web 要重新协商、Android 要重开采集器），同步接口会卡 UI；
+     * - 只有一颗摄像头时「点了没反应」最让人困惑，结果必须能回给界面。
+     *
+     * @return 是否真的切了。只有一颗摄像头 / 摄像头没开 / 该端不支持 → false
+     */
+    suspend fun switchCamera(): Boolean = false
+
+    /**
+     * 本地预览镜像（默认空实现：该端没有本地预览）。
+     *
+     * 只作用于**本地预览**，绝不镜像发布出去的流 —— 镜像发布会让对方看到的字是反的。
+     * 「前摄默认镜像、后摄不镜像」的默认值由各端在「摄像头打开 / 切换」时自己落地
+     * （见 docs/AGENT-camera-switch-mirror.md §4.2）；用户手动拨过开关后以用户为准。
+     */
+    fun setLocalMirror(on: Boolean) {}
 }
 
 expect fun createMediaSession(): MediaSession

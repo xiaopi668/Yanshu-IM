@@ -34,6 +34,24 @@ expect object CallMediaExtras {
     /** 记录摄像头权限被拒的状态 */
     fun setVideoBlocked(blocked: Boolean)
 
+    // ---------- 摄像头翻转 / 本地镜像（docs/AGENT-camera-switch-mirror.md §4.3） ----------
+    // 这三个成员的语义是「界面要显示什么」，真实动作在 MediaSession（UI 不直接碰 SDK）。
+
+    /** 该平台是否支持前后摄像头切换（决定是否显示「翻转」按钮）；桌面恒 false */
+    val cameraSwitchSupported: Boolean
+
+    /** 本地预览是否镜像（决定「镜像」按钮文案与是否已应用）；前摄默认 true、后摄不镜像 */
+    val mirrorOn: StateFlow<Boolean>
+
+    /**
+     * 「翻转」此刻不可用的原因（空串 = 可用）。
+     *
+     * 为什么需要它：只有一颗摄像头的设备上，按钮要么先置灰、要么点一次才知道 ——
+     * 两种都不能静默无效。平台侧在「摄像头打开 / 切换失败」时写入人话，
+     * UI 据此置灰按钮并显示原因。
+     */
+    val cameraSwitchHint: StateFlow<String>
+
     /** 设置免提；未接通或不支持时忽略 */
     fun setSpeaker(on: Boolean)
 
