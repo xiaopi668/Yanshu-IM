@@ -22,7 +22,7 @@ enum class MicPermission { Granted, Denied, Blocked }
  * 为什么用「注入」而不是直接申请：Activity Result API 的 launcher 必须由 Activity 注册，
  * 而 shared 层拿不到 Activity。这跟 [im.client.file.AndroidFilePicker] 是同一套范式，
  * 由 `MainActivity.onCreate` 把三样东西装进来：
- *   - [launch]：拉起 RECORD_AUDIO 系统弹窗
+ *   - [launch]：拉起权限系统弹窗（麦克风与摄像头共用，回调由 [onResult] 分发）
  *   - [shouldShowRationale]：转发 `Activity.shouldShowRequestPermissionRationale`，
  *     用来判定「不再询问」（没法和「刚被拒」区分时，UI 会给出错误指引）
  *   - [notifications]：Android 13+ 的 POST_NOTIFICATIONS 弹窗（通话通知用）
@@ -37,11 +37,15 @@ object CallPermissions {
     /** 麦克风权限（指名写死，避免依赖 android.Manifest 常量的可见性差异） */
     const val PERM_RECORD_AUDIO: String = android.Manifest.permission.RECORD_AUDIO
 
+    /** 摄像头权限（视频通话用） */
+    const val PERM_CAMERA: String = android.Manifest.permission.CAMERA
+
     /** Android 13 起的通知权限；低版本没有这个权限，永远视为已授予 */
     const val PERM_POST_NOTIFICATIONS: String = "android.permission.POST_NOTIFICATIONS"
 
     private const val PREFS_NAME = "im_call"
     private const val KEY_MIC_ASKED = "mic_asked"
+    private const val KEY_CAMERA_ASKED = "camera_asked"
 
     /** 由 MainActivity 注入：拉起权限弹窗（参数是权限名） */
     var launch: ((String) -> Unit)? = null
@@ -59,6 +63,9 @@ object CallPermissions {
     /** 等待中的麦克风申请（同一时刻只允许一个，重复申请会直接覆盖旧回调） */
     private var pendingMic: ((Boolean) -> Unit)? = null
 
+    /** 等待中的摄像头申请 */
+    private var pendingCamera: ((Boolean) -> Unit)? = null
+
     /** 通知权限申请是否在进行中（结果对通话没有影响，只防重复弹窗） */
     private var pendingNotification: Boolean = false
 
@@ -70,8 +77,18 @@ object CallPermissions {
         context.applicationContext.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
     }.getOrDefault(false)
 
-    /** MainActivity 的 RECORD_AUDIO launcher 回调 */
+    /**
+     * 权限 launcher 的通用回调（麦克风 / 摄像头共用一个 launcher）。
+     *
+     * 分发规则：有摄像头等待就先给它 —— 麦克风在入会时申请、摄像头在接通后申请，
+     * 两者不会同时挂起（如果将来要并行申请，这里必须改成按 requestCode 区分）。
+     */
     fun onResult(granted: Boolean) {
+        pendingCamera?.let { cb ->
+            pendingCamera = null
+            cb(granted)
+            return
+        }
         val cb = pendingMic ?: return
         pendingMic = null
         cb(granted)
@@ -133,6 +150,47 @@ object CallPermissions {
                 if (cont.isActive) cont.resume(null)
             }
         }
+
+
+    /**
+     * 申请摄像头权限。语义与 [requestMic] 完全一致（三态 + 不重复弹窗 + 不永久挂起）。
+     *
+     * 单独一个方法而不是把权限名做成参数：两者「不再询问」的判定要各记一个 asked 标记，
+     * 混在一起会把「只拒过麦克风」误判成「摄像头也永久拒绝了」。
+     */
+    suspend fun requestCamera(context: Context): MicPermission {
+        lastHint = ""
+        val app = context.applicationContext
+        if (isGranted(app, PERM_CAMERA)) return MicPermission.Granted
+
+        val launcher = launch
+        if (launcher == null) {
+            lastHint = "当前环境无法弹出授权框"
+            Log.w(TAG, "未注入权限 launcher（MainActivity 未初始化？），按拒绝处理")
+            return MicPermission.Denied
+        }
+
+        val askedBefore = prefs(app).getBoolean(KEY_CAMERA_ASKED, false)
+        prefs(app).edit().putBoolean(KEY_CAMERA_ASKED, true).apply()
+
+        // 显式给类型参数：不写的话 cont.resume(null) 会让推断成 Nothing?
+        val granted = suspendCancellableCoroutine<Boolean?> { cont ->
+            pendingCamera = { ok -> if (cont.isActive) cont.resume(ok) }
+            cont.invokeOnCancellation { pendingCamera = null }
+            val launched = runCatching { launcher(PERM_CAMERA) }
+            if (launched.isFailure) {
+                pendingCamera = null
+                lastHint = "系统授权框没能弹出（界面不在前台）"
+                Log.w(TAG, "拉起摄像头授权弹窗失败", launched.exceptionOrNull())
+                if (cont.isActive) cont.resume(null)
+            }
+        } ?: return MicPermission.Denied
+        if (granted) return MicPermission.Granted
+
+        val rationaleVisible = shouldShowRationale?.invoke(PERM_CAMERA)
+        val blocked = askedBefore && rationaleVisible == false
+        return if (blocked) MicPermission.Blocked else MicPermission.Denied
+    }
 
     /**
      * 申请通知权限（Android 13+）。由 [CallService.start] 在起前台服务前调用。

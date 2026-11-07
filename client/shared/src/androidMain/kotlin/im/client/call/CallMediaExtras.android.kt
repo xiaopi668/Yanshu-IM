@@ -32,6 +32,13 @@ actual object CallMediaExtras {
     private val _micPermissionBlocked = MutableStateFlow(false)
     actual val micPermissionBlocked: StateFlow<Boolean> = _micPermissionBlocked.asStateFlow()
 
+    private val _videoBlocked = MutableStateFlow(false)
+    actual val videoBlocked: StateFlow<Boolean> = _videoBlocked.asStateFlow()
+
+    actual fun setVideoBlocked(blocked: Boolean) {
+        _videoBlocked.value = blocked
+    }
+
     actual fun setSpeaker(on: Boolean) = CallAudioRouter.setSpeaker(on)
 
     actual fun toggleSpeaker() = CallAudioRouter.setSpeaker(!_speakerOn.value)

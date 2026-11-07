@@ -408,7 +408,6 @@ fun MainScreen(
             video = callState.video,
             videoOn = callState.videoOn,
             videoSupported = client.callController.videoSupported,
-            mediaSession = client.callController.mediaSessionForUi(),
             onToggleVideo = { client.callController.toggleVideo() },
         )
         else -> {}
@@ -493,18 +492,14 @@ fun InCallOverlay(
     videoOn: Boolean = false,
     /** 该端是否能真的出画面（目前只有 Web） */
     videoSupported: Boolean = false,
-    /** 平台媒体层：把视频画面位置回传给浏览器/原生视图 */
-    mediaSession: im.client.call.MediaSession? = null,
     onToggleVideo: () -> Unit = {},
 ) {
     val scheme = MaterialTheme.colorScheme
-    // 组合上下文里先取密度：onGloballyPositioned 的 lambda 不是 @Composable，
-    // 在那里 LocalDensity.current 会直接编译不过
-    val density = androidx.compose.ui.platform.LocalDensity.current
     // 三项里只有 Android 会真的变化；Web/桌面是常量（见各端 actual）
     val speakerOn by CallMediaExtras.speakerOn.collectAsState()
     val reconnecting by CallMediaExtras.reconnecting.collectAsState()
     val micPermissionBlocked by CallMediaExtras.micPermissionBlocked.collectAsState()
+    val videoBlocked by CallMediaExtras.videoBlocked.collectAsState()
     // 「去设置」能不能用只有点下去才知道（openAppSettings() 拿不到宿主 Context 时返回 false）。
     // 组合期不能试调 —— 试调成功就真的跳转到设置页了。所以先按状态渲染，失败一次就隐藏，
     // 免得留下一个点了没反应的按钮。
@@ -537,27 +532,24 @@ fun InCallOverlay(
                 // 只要该端能放视频就留出画面区域：对端随时可能打开摄像头，
                 // 不依赖「呼叫时是否声明视频」（信令里没有这个字段）
                 if (videoSupported && media == CallMediaState.Connected) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(220.dp)
-                            .clip(MaterialTheme.shapes.large)
-                            .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                            .onGloballyPositioned { coords ->
-                                val d = density.density
-                                val b = coords.boundsInWindow()
-                                mediaSession?.placeVideoSurfaces(
-                                    (b.left / d).toInt(), (b.top / d).toInt(),
-                                    (b.width / d).toInt(), (b.height / d).toInt(),
-                                    96,
-                                )
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            "",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // 远端画面 + 右下角本地预览。
+                    // 渲染在各端的 actual 里完成：Android 是原生 SurfaceViewRenderer，
+                    // Web 是 DOM 图层（位置由它自己回传），桌面是占位。
+                    Box(Modifier.fillMaxWidth().height(220.dp)) {
+                        CallVideoSurface(
+                            role = CallVideoRole.Remote,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                // 圆角只作用在背景层：Android 的 SurfaceView 不能被裁剪（会黑屏）
+                                .clip(MaterialTheme.shapes.large),
+                        )
+                        CallVideoSurface(
+                            role = CallVideoRole.Local,
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(8.dp)
+                                .size(96.dp)
+                                .clip(MaterialTheme.shapes.medium),
                         )
                     }
                     Spacer(Modifier.height(12.dp))
@@ -578,9 +570,21 @@ fun InCallOverlay(
                     )
                 }
 
+                // 摄像头权限被拒：通话本身照常（只是没画面），但必须让用户知道为什么黑屏，
+                // 以及怎么修 —— 静默黑屏是最难自查的一种失败。
+                if (videoBlocked) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "摄像头权限被拒绝，对方看不到你的画面（可点下方「去设置」开启）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
+
                 // 阶段 5：权限被拒是唯一「用户自己能修」的失败，给一条出路；
                 // 其它失败（token 过期 / 地址不可达）没有可操作项，只显示原因。
-                if (media == CallMediaState.Failed && micPermissionBlocked && !settingsUnavailable) {
+                if ((media == CallMediaState.Failed && micPermissionBlocked) || videoBlocked) {
                     Spacer(Modifier.height(16.dp))
                     FilledTonalButton(onClick = {
                         if (!CallMediaExtras.openAppSettings()) settingsUnavailable = true

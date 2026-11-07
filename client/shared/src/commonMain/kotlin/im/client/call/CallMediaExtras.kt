@@ -28,6 +28,12 @@ expect object CallMediaExtras {
     /** 麦克风权限是否已被「拒绝且不再询问」——UI 据此提示「去设置里开启」 */
     val micPermissionBlocked: StateFlow<Boolean>
 
+    /** 摄像头权限是否已被拒（不明说「不再询问」——两种都提示去设置即可） */
+    val videoBlocked: StateFlow<Boolean>
+
+    /** 记录摄像头权限被拒的状态 */
+    fun setVideoBlocked(blocked: Boolean)
+
     /** 设置免提；未接通或不支持时忽略 */
     fun setSpeaker(on: Boolean)
 

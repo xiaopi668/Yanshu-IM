@@ -15,6 +15,8 @@ actual object CallMediaExtras {
     actual val speakerSupported: Boolean = false
     actual val reconnecting: StateFlow<Boolean> = falseFlow.asStateFlow()
     actual val micPermissionBlocked: StateFlow<Boolean> = falseFlow.asStateFlow()
+    actual val videoBlocked: StateFlow<Boolean> = falseFlow.asStateFlow()
+    actual fun setVideoBlocked(blocked: Boolean) = Unit
 
     actual fun setSpeaker(on: Boolean) = Unit
     actual fun toggleSpeaker() = Unit

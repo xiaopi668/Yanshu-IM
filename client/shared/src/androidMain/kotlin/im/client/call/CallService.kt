@@ -102,12 +102,20 @@ class CallService : Service() {
         super.onDestroy()
     }
 
-    /** 带类型地进入前台（API 29+ 必须指明 microphone 类型，Android 14 起会校验） */
+    /**
+     * 带类型地进入前台（API 29+ 必须指明类型，Android 14 起会校验）。
+     *
+     * 类型要**同时**包含 microphone 与 camera：调用方只传了 microphone 的话，
+     * 一旦开了摄像头，系统会认为「你在用未声明的类型采集」而抛 SecurityException ——
+     * 而且是在打开摄像头的瞬间崩，不在启动服务时，很难联想到是这里的类型没写全。
+     */
     private fun startForegroundCompat(): Boolean {
         val notification = buildNotification()
+        val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
         return runCatching {
             if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                startForeground(NOTIFICATION_ID, notification, types)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }

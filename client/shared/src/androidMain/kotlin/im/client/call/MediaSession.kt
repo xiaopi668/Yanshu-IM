@@ -115,6 +115,56 @@ private object AndroidMediaSession : MediaSession {
             }.getOrDefault(true)
         }
 
+    /** Android 有摄像头与原生渲染器，视频可用 */
+    override val videoSupported: Boolean = true
+
+    /**
+     * 开关摄像头。只在已接通时生效；失败只影响画面，不动已经接通的声音。
+     *
+     * 顺序：先要权限再 publish —— 反过来会先弹摄像头再被拒，用户看到两次权限框。
+     */
+    override fun setVideoEnabled(enabled: Boolean) {
+        val r = room ?: return
+        scope.launch {
+            if (enabled) {
+                val ctx = im.client.db.appContext
+                if (ctx != null) {
+                    when (CallPermissions.requestCamera(ctx)) {
+                        MicPermission.Granted -> Unit
+                        MicPermission.Denied -> {
+                            Log.w(TAG, "摄像头权限被拒")
+                            CallMediaExtras.setVideoBlocked(true)
+                            return@launch
+                        }
+                        MicPermission.Blocked -> {
+                            Log.w(TAG, "摄像头权限已被拒绝（不再询问）")
+                            CallMediaExtras.setVideoBlocked(true)
+                            return@launch
+                        }
+                    }
+                    CallMediaExtras.setVideoBlocked(false)
+                }
+            }
+            runCatching { r.localParticipant.setCameraEnabled(enabled) }
+                .onSuccess { on ->
+                    Log.i(TAG, "摄像头=" + on)
+                    if (!on) AndroidCallVideo.detachLocalTrack()
+                }
+                .onFailure { Log.w(TAG, "切换摄像头失败（enabled=" + enabled + "）", it) }
+            // publish 成功后把本地画面挂到预览槽位
+            if (enabled) {
+                runCatching {
+                    val pub = r.localParticipant.getTrackPublication(
+                        io.livekit.android.room.track.Track.Source.CAMERA,
+                    )
+                    // LocalTrackPublication 没有 videoTrack 便捷属性，要从 track 上转
+                    (pub?.track as? io.livekit.android.room.track.VideoTrack)
+                        ?.let { AndroidCallVideo.attachLocalTrack(it) }
+                }
+            }
+        }
+    }
+
     override suspend fun join(url: String, token: String): Result<Unit> =
         withContext(Dispatchers.Main.immediate) {
             // 新一轮通话：清掉上一轮的「已挂断」标记
@@ -257,6 +307,15 @@ private object AndroidMediaSession : MediaSession {
             tearingDown = true
             try {
                 if (target != null) {
+                    // 0) 关摄像头：与麦克风同理，不关的话系统状态栏的相机指示器会一直亮
+                    runCatching {
+                        withTimeoutOrNull(MIC_RELEASE_TIMEOUT_MS) {
+                            target.localParticipant.setCameraEnabled(false)
+                        }
+                    }.onFailure { Log.w(TAG, "关闭摄像头失败（继续清理）", it) }
+                    AndroidCallVideo.detachLocalTrack()
+                    AndroidCallVideo.detachRemote()
+
                     // 1) 关麦：这是「挂断后系统状态栏麦克风指示灯消失」的关键一步（先关再断）
                     runCatching {
                         withTimeoutOrNull(MIC_RELEASE_TIMEOUT_MS) {
@@ -275,6 +334,8 @@ private object AndroidMediaSession : MediaSession {
                 CallMediaExtras.setReconnecting(false)
                 // 4) 停前台服务（不在运行也安全）
                 im.client.db.appContext?.let { CallService.stop(it) }
+                // 5) 清空渲染槽位与 GL 上下文（View 由 Compose 销毁，这里只放引用）
+                AndroidCallVideo.clear()
             } finally {
                 tearingDown = false
                 // 5) 音频路由恢复：关免提、MODE_NORMAL、放弃音频焦点、注销广播
@@ -297,6 +358,21 @@ private object AndroidMediaSession : MediaSession {
         when (event) {
             is RoomEvent.Connected -> settleReconnect("已接通")
             is RoomEvent.Reconnected -> settleReconnect("重连成功")
+
+            is RoomEvent.TrackSubscribed -> {
+                val t = event.track
+                if (t is io.livekit.android.room.track.RemoteVideoTrack) {
+                    Log.i(TAG, "远端视频轨到达，挂到渲染槽位")
+                    AndroidCallVideo.attachRemote(t)
+                }
+            }
+
+            is RoomEvent.TrackUnsubscribed -> {
+                if (event.track is io.livekit.android.room.track.RemoteVideoTrack) {
+                    Log.i(TAG, "远端视频轨移除")
+                    AndroidCallVideo.detachRemote()
+                }
+            }
 
             is RoomEvent.Reconnecting -> {
                 Log.i(TAG, "媒体重连中…")

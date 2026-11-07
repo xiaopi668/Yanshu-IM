@@ -18,11 +18,18 @@
          LiveKit 内部的 audioswitch 会枚举蓝牙设备，而它在未授权时会直接抛异常，
          反而把整通电话打挂；蓝牙路由留到后续阶段（届时需要在申请 + 失败降级两处都补齐）。 -->
 
-    <!-- io.livekit:livekit-android 的 AAR 清单会带进这两条权限（视频/屏幕共享用）。
-         本项目只做语音（AGENT.md §1），不申请摄像头、不做屏幕共享 —— 留着会让应用详情页
-         显示「相机」权限，既误导用户也过不了部分渠道的审核。用 tools:node="remove" 摘掉，
-         运行时不会调用这两条链路（setCameraEnabled / createScreencastTrack 均未使用）。 -->
-    <uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
+    <!-- ===== 视频通话所需权限 ===== -->
+    <!-- 摄像头采集：运行时权限，由 CallPermissions.requestCamera 在「开摄像头」时申请。
+         之前这里用 tools:node="remove" 摘掉过（那时只做语音），现在做视频必须声明回来。 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Android 14(API 34) 起：前台服务若包含 camera 类型，必须申报这条 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <!-- 摄像头是可选硬件：没有摄像头的设备仍该能装（只做语音）。required=false 让应用商店/系统
+         不要把「有摄像头」当成安装前提。 -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!-- 屏幕共享仍然不做：把 LiveKit AAR 带进来的 mediaProjection 权限摘掉，
+         否则应用详情页会显示「屏幕录制」权限，误导用户。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" tools:node="remove" />
 
     <application
@@ -50,13 +57,13 @@
             </intent-filter>
         </activity>
 
-        <!-- 通话前台服务：foregroundServiceType=microphone 必须与
-             startForeground(..., FOREGROUND_SERVICE_TYPE_MICROPHONE) 一致，否则 API 34 直接抛 SecurityException。
+        <!-- 通话前台服务：foregroundServiceType 必须与
+             startForeground(..., TYPE_MICROPHONE or TYPE_CAMERA) 一致，否则 API 34 直接抛 SecurityException。
              exported=false：只允许本应用启动；stopWithTask=false：
              用户从最近任务里划掉 App 时不连带停止服务（否则通话会被一起掐断）。 -->
         <service
             android:name="im.client.call.CallService"
-            android:foregroundServiceType="microphone"
+            android:foregroundServiceType="microphone|camera"
             android:exported="false"
             android:stopWithTask="false" />
 
