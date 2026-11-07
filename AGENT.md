@@ -483,8 +483,6 @@ Box(Modifier.size(160.dp, 120.dp).clip(MaterialTheme.shapes.medium)) {
 | JVM 侧进程封装 | `client/shared/src/desktopMain/kotlin/im/client/call/Sidecar.kt` |
 | 桌面 `MediaSession` 实现 | `client/shared/src/desktopMain/kotlin/im/client/call/MediaSession.kt` |
 | 媒体异常上报 | `MediaSession.setOnBroken(...)`（`CallController` 会置为 Failed） |
-| 视频画面渲染 | `client/composeApp/src/*/kotlin/im/app/CallVideoSurface.kt`（expect + 三端 actual） |
-| 切换前后摄像头 / 本地镜像（待做） | [`docs/AGENT-camera-switch-mirror.md`](docs/AGENT-camera-switch-mirror.md) |
 
 外部参考：LiveKit Android SDK 文档（`io.livekit:livekit-android`）。版本钉在
 `client/gradle/libs.versions.toml` 的 `livekitAndroid`（当前 **2.29.2**）——升级后必须重跑
