@@ -621,7 +621,9 @@ fun ProfileDialog(
                         try {
                             val f = im.client.file.pickFile() ?: return@launch
                             val key = client.api.uploadAttachment(client.myToken, "image", f.bytes)
-                            client.api.setAvatar(client.myToken, key)
+                            // 必须走 client.updateAvatar：它在更新服务端的同时同步本地 myAvatar
+                            // 并通知界面（否则侧栏头像一直是首字母）
+                            client.updateAvatar(key)
                             avatarKey = key
                         } catch (e: Throwable) { msg = e.message }
                     }
@@ -910,6 +912,7 @@ fun ProfileDialog(
                         try {
                             client.api.updateProfile(client.myToken, nickname.trim(), username.trim())
                             client.setNickname(nickname.trim())
+                            client.notifyProfileChanged()
                             if (wantYidChange) {
                                 client.api.changeYid(client.myToken, newYid)
                                 yidChanged = true

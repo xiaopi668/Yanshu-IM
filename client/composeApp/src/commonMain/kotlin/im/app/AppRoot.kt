@@ -284,10 +284,20 @@ fun MainScreen(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Avatar(
-                        client.myNickname.ifEmpty { client.myUid.takeLast(6) },
+                    // 换头像/改昵称后要立刻反映到头部：myNickname / myAvatar 是普通字段，
+                    // Compose 观察不到变化 —— 用 profileVersion 做 key 重新取值，
+                    // 否则就是「只有资料页显示新头像，首页还是首字母」。
+                    val profileVer by client.profileVersion.collectAsState()
+                    val shownName = remember(profileVer) {
+                        client.myNickname.ifEmpty { client.myUid.takeLast(6) }
+                    }
+                    val shownAvatar = remember(profileVer) { client.myAvatar }
+                    UserAvatar(
+                        api = client.api,
+                        token = client.myToken,
+                        imageKey = shownAvatar,
+                        name = shownName,
                         size = 42.dp,
-                        round = true,
                     )
                     Spacer(Modifier.width(8.dp))
                     // 原写法：Column + Modifier.clickable（无涟漪、无按钮语义）。

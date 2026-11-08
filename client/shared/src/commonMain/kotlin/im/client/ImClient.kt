@@ -39,9 +39,40 @@ class ImClient(
     var myNickname: String = ""
         private set
 
+    /**
+     * 自己的头像 key（对象存储 key，不是 URL）。
+     *
+     * 之前只有资料页自己持有一份 avatarKey，侧栏头部永远画首字母 ——
+     * 换完头像「只有个人页显示，首页不显示」就是这么来的。
+     */
+    var myAvatar: String = ""
+
+    private val _profileVersion = MutableStateFlow(0)
+
+    /**
+     * 资料变更版本号。
+     *
+     * myNickname / myAvatar 是普通字段，Compose 观察不到变化；
+     * 换头像、改昵称后自增这个值，界面 collect 它即可刷新。
+     */
+    val profileVersion: StateFlow<Int> = _profileVersion
+
+    /** 资料变更后调用：让所有 collect profileVersion 的地方重新读字段 */
+    fun notifyProfileChanged() {
+        _profileVersion.value = _profileVersion.value + 1
+    }
+
+    /** 上传并设置头像；成功后同步本地字段并通知界面 */
+    suspend fun updateAvatar(key: String) {
+        api.setAvatar(myToken, key)
+        myAvatar = key
+        notifyProfileChanged()
+    }
+
     /** 改完昵称后同步本地缓存，避免要重新登录侧栏才更新 */
     fun setNickname(nickname: String) {
         myNickname = nickname
+        notifyProfileChanged()
     }
 
     val conversations = store.conversations
@@ -80,6 +111,7 @@ class ImClient(
         val me = api.me(token)
         myUid = me.uid
         myNickname = me.nickname
+        myAvatar = me.avatar
         bindCacheOwner(me.uid)
         store.setMyUid(me.uid)
         callController.myUid = me.uid
@@ -98,7 +130,10 @@ class ImClient(
         bindCacheOwner(resp.uid)
         store.setMyUid(resp.uid)
         callController.myUid = resp.uid
-        myNickname = api.me(resp.token).nickname
+        api.me(resp.token).let {
+            myNickname = it.nickname
+            myAvatar = it.avatar
+        }
         return resp.uid to resp.token
     }
 

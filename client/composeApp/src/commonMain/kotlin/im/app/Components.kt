@@ -64,6 +64,41 @@ fun Avatar(name: String, size: Dp = 40.dp, round: Boolean = false, modifier: Mod
     }
 }
 
+/**
+ * 带头像图片的圆形头像：有 key 就显示图片，没有（或加载失败）回落到首字母。
+ *
+ * 之所以单独一个组件而不是给 [Avatar] 加参数：Avatar 被通讯录、消息气泡等十几处调用，
+ * 那些地方大多只有昵称、不想每处都传 api/token。需要真头像的地方用这个。
+ */
+@Composable
+fun UserAvatar(
+    api: im.client.api.Api,
+    token: String,
+    imageKey: String?,
+    name: String,
+    size: Dp = 40.dp,
+    modifier: Modifier = Modifier,
+) {
+    val key = imageKey?.takeIf { it.isNotBlank() }
+    if (key == null) {
+        Avatar(name, size = size, round = true, modifier = modifier)
+        return
+    }
+    Surface(
+        modifier = modifier.size(size),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+    ) {
+        NetImage(
+            api = api,
+            token = token,
+            key = key,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+        )
+    }
+}
+
 // 原写法：三个硬编码色值 Color(0xFF16A34A/0xFFF59E0B/0xFF94A3B8) + Box 画圆点。
 // 现在：圆点交给 Surface，颜色改用语义角色（在线=primary、连接中=tertiary、离线=outline）。
 // 状态同时有文字标签，不靠颜色单独传达 ✅
