@@ -24,3 +24,13 @@ expect fun positionTurnstileWidget(containerId: String, left: Int, top: Int, wid
 
 /** 隐藏小组件（验证已通过、或当前不在注册界面时） */
 expect fun hideTurnstileWidget(containerId: String)
+
+/**
+ * 重新发起一次验证，并清空当前令牌。
+ *
+ * **Turnstile 令牌是一次性的**：每次 siteverify 成功后该令牌立即失效。
+ * 而登录要发两次请求（先探 totp_required、再带验证码重发），发邮箱验证码也算一次 ——
+ * 复用同一令牌的第二次请求会被 Cloudflare 拒绝，表现就是「组件显示成功，但提示人机验证未通过」。
+ * 所以每次带令牌的请求之前都要重新取一个。
+ */
+expect fun resetTurnstileWidget()

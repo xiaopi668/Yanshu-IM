@@ -38,6 +38,9 @@ private external fun jsPlaceTurnstile(containerId: String, left: Int, top: Int, 
 @JsFun("(containerId) => { const el = document.getElementById(containerId); if (el) el.style.display = 'none'; }")
 private external fun jsHideTurnstile(containerId: String)
 
+@JsFun("() => { window.turnstileToken = ''; window.turnstileError = ''; try { if (window.turnstileWidgetId) window.turnstile.reset(window.turnstileWidgetId); return true; } catch (e) { return false; } }")
+private external fun jsResetTurnstile(): Boolean
+
 @JsFun("() => (typeof window.turnstileToken === 'string') ? window.turnstileToken : ''")
 private external fun jsReadToken(): String
 
@@ -52,6 +55,10 @@ private external fun jsScriptLoaded(): Boolean
 
 @JsFun("() => { const s = document.createElement('script'); s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js'; s.id = 'cf-turnstile-api'; s.async = true; document.body.appendChild(s); }")
 private external fun jsLoadScript()
+
+actual fun resetTurnstileWidget() {
+    runCatching { jsResetTurnstile() }
+}
 
 actual fun renderTurnstileWidget(siteKey: String, containerId: String): Boolean {
     return try {

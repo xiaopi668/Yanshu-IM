@@ -6,3 +6,4 @@ actual fun registerTurnstileErrorCallback(onError: (String) -> Unit) {}
 actual fun renderTurnstileWidget(siteKey: String, containerId: String): Boolean = false
 actual fun positionTurnstileWidget(containerId: String, left: Int, top: Int, width: Int, height: Int) {}
 actual fun hideTurnstileWidget(containerId: String) {}
+actual fun resetTurnstileWidget() {}

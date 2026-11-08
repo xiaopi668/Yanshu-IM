@@ -9,6 +9,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.first
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,6 +32,7 @@ import im.client.openUrl
 import im.app.resources.Res
 import im.app.resources.logo
 import im.client.registerTurnstileCallback
+import im.client.resetTurnstileWidget
 import im.client.hideTurnstileWidget
 import im.client.positionTurnstileWidget
 import im.client.registerTurnstileErrorCallback
@@ -130,9 +133,32 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
             siteCfgErr = "站点配置加载失败：${e.message ?: e}（请确认 API 地址指向服务端 :10002）"
         }
     }
+    val turnstileOn = siteCfg?.turnstile_enabled == true && siteCfg?.turnstile_site_key?.isNotEmpty() == true
+
+    /**
+     * 取一枚**新的** Turnstile 令牌。
+     *
+     * Turnstile 的令牌一次性：每次 siteverify 成功后立即作废。而这个页面会连续发多次请求
+     * （先探 totp_required → 再带验证码重发；或者先发邮箱验证码再登录），
+     * 复用同一枚令牌的第二次请求必然被拒 —— 现象就是「组件显示成功，却提示人机验证未通过」。
+     */
+    suspend fun freshTurnstileToken(): String {
+        if (!turnstileOn) return ""
+        // 桌面/Android 画不出小组件：不空等 10 秒，让服务端与界面上的说明去解释
+        if (!turnstileRenderable) return ""
+        turnstileToken = ""
+        resetTurnstileWidget()
+        val ready = kotlinx.coroutines.withTimeoutOrNull(10_000) {
+            snapshotFlow { turnstileToken }.first { it.isNotEmpty() }
+        }
+        // 超时说明挑战需要用户点一下（或网络到不了 Cloudflare），
+        // 这里直接抛给外层 catch 显示 —— 带着空令牌发请求只会得到一句看不懂的 403
+        if (ready == null) error("人机验证未完成：请点一下下方的验证框再重试")
+        return turnstileToken
+    }
+
     // 站点关闭注册时不给注册入口
     val canRegister = siteCfg?.registration_enabled != false
-    val turnstileOn = siteCfg?.turnstile_enabled == true && siteCfg?.turnstile_site_key?.isNotEmpty() == true
     // 站点开了人机验证却没拿到令牌：登录/注册都会被服务端 403，提前拦掉并说明原因
     val turnstilePending = turnstileOn && turnstileToken.isEmpty()
     // 当前端根本渲染不出小组件（桌面/Android）时，光等着也没用，要给出替代方案
@@ -228,7 +254,8 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                     onClick = {
                                         scope.launch {
                                             try {
-                                                val ok = apiSendEmailCode(apiBase.trimEnd('/'), email, turnstileToken)
+                                                // 发验证码同样会消耗令牌，先换一枚
+                                                val ok = apiSendEmailCode(apiBase.trimEnd('/'), email, freshTurnstileToken())
                                                 if (ok) {
                                                     tip = "验证码已发送（5 分钟内有效）"
                                                     // 冷却 60s：既防连点，也把「5 分钟有效」的预期讲清楚
@@ -309,7 +336,9 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                     val client = ImClient(apiBase.trimEnd('/'), wsBase)
                                     client.callController.livekitUrl = siteCfg?.livekit_url ?: ""
                                     client.wireCallbacks()
-                                    client.login(username, password, turnstileToken, totpCode.trim())
+                                    // 每次提交都换新令牌：上一枚已被上一次请求消耗掉
+                                    val tk = freshTurnstileToken()
+                                    client.login(username, password, tk, totpCode.trim())
                                     client.startSession()
                                     saveSession(SavedSession(client.myToken, client.apiBaseUrl, client.gatewayWsUrl))
                                     onLoggedIn(client)
@@ -414,7 +443,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
                                         // 注册已经把它用掉了，第二次校验必然失败
                                         //（Cloudflare 会返回 timeout-or-duplicate）。
                                         val (_, regToken) = client.register(
-                                            username, password, username, "", email, emailCode, turnstileToken,
+                                            username, password, username, "", email, emailCode, freshTurnstileToken(),
                                         )
                                         client.loginWithToken(regToken)
                                         client.startSession()
@@ -546,7 +575,7 @@ fun LoginScreen(onLoggedIn: (ImClient) -> Unit) {
     if (showResetDialog && siteCfg?.email_code_enabled == true) {
         ResetPasswordDialog(
             apiBase = apiBase.trimEnd('/'),
-            turnstileToken = turnstileToken,
+            fetchToken = { freshTurnstileToken() },
             onDismiss = { showResetDialog = false },
             onDone = {
                 showResetDialog = false
@@ -685,7 +714,11 @@ private fun TurnstileSlot(token: String, renderable: Boolean, err: String? = nul
 @Composable
 private fun ResetPasswordDialog(
     apiBase: String,
-    turnstileToken: String,
+    /**
+     * 取令牌的**函数**而不是值：重置密码要发两次请求（发验证码 + 提交重置），
+     * 而 Turnstile 令牌一次性，固定传一个值的话第二次必然失败。
+     */
+    fetchToken: suspend () -> String,
     onDismiss: () -> Unit,
     onDone: () -> Unit,
 ) {
@@ -732,7 +765,7 @@ private fun ResetPasswordDialog(
                             busy = true
                             scope.launch {
                                 try {
-                                    val ok = apiSendEmailCode(apiBase, email.trim(), turnstileToken)
+                                    val ok = apiSendEmailCode(apiBase, email.trim(), fetchToken())
                                     if (ok) {
                                         tip = "验证码已发送（5 分钟内有效）"
                                         err = null
